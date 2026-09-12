@@ -1,0 +1,32 @@
+{
+  "version": "1.0.2957.106",
+  "upstream": "https://api.nuget.org/v3-flatcontainer/microsoft.web.webview2/1.0.2957.106/microsoft.web.webview2.1.0.2957.106.nupkg",
+  "packageSHA256": "4c35a54835b63954159eac1d5b7a60ae617a41dbb5b73bfdb11c4870a891080a",
+  "files": [
+    {
+      "bundled": "webview\\lib\\Microsoft.Web.WebView2.Core.dll",
+      "sha256": "cb8c852fcc4ef55d630b64d171dc11538bb25258041ed22cf31735982a2e09e3",
+      "upstreamMember": "lib/net462/Microsoft.Web.WebView2.Core.dll"
+    },
+    {
+      "bundled": "webview\\lib\\Microsoft.Web.WebView2.WinForms.dll",
+      "sha256": "e62056bee28ab094071144b47371009a6fbc162f9aea184719f2e86ed515f7f8",
+      "upstreamMember": "lib/net462/Microsoft.Web.WebView2.WinForms.dll"
+    },
+    {
+      "bundled": "webview\\lib\\runtimes\\win-x86\\native\\WebView2Loader.dll",
+      "sha256": "7f362fd98cc243ad620f2d0a4a6c223df80f960c4e19a2d9972f4af7938565cf",
+      "upstreamMember": "build/native/x86/WebView2Loader.dll"
+    },
+    {
+      "bundled": "webview\\lib\\runtimes\\win-x64\\native\\WebView2Loader.dll",
+      "sha256": "271b57e3ec03c436a15d80cafeb9fd1618a43793233d8b05c9446f8de0a51be4",
+      "upstreamMember": "build/native/x64/WebView2Loader.dll"
+    },
+    {
+      "bundled": "webview\\lib\\runtimes\\win-arm64\\native\\WebView2Loader.dll",
+      "sha256": "277e84cd9474ef6302ff3bc91706ccac9bc709cd226de4dbd7dad28571b2bc05",
+      "upstreamMember": "build/native/arm64/WebView2Loader.dll"
+    }
+  ]
+}

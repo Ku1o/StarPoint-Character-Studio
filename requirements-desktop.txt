@@ -1,0 +1,11 @@
+# Build/source desktop host; the distributed EXE already contains these libraries.
+# Microsoft Edge WebView2 Runtime and .NET Framework 4.6.2+ are system components.
+Pillow>=12.3.0
+pywebview==6.1
+pythonnet==3.1.0
+clr_loader==0.3.1
+cffi==2.1.1
+pycparser==3.0
+proxy_tools==0.1.0
+bottle==0.13.4
+typing_extensions==4.16.0

@@ -1,0 +1,11 @@
+.brand-group{display:flex;align-items:center;gap:14px;flex-shrink:0}
+.app-version{padding:5px 9px;border-radius:8px;font-size:11px;letter-spacing:.03em;color:var(--muted);background:transparent;white-space:nowrap}
+.app-version:hover{color:var(--accent);border-color:var(--accent)}
+.about-heading{display:flex;align-items:center;gap:18px;margin-bottom:22px}
+.about-heading h2{margin:0 0 5px}.about-heading p{margin:0;color:var(--muted)}
+.about-mark{font-size:32px;color:var(--accent);background:var(--bg);border:1px solid var(--line);border-radius:16px;padding:12px 18px}
+.about-steps{padding-left:24px;line-height:1.8}.about-steps li{padding:3px 0}
+.about-origin{border-top:1px solid var(--line);margin-top:22px;padding-top:8px}
+.about-origin a,.about-guide{color:var(--accent);text-decoration:underline;text-underline-offset:3px}
+.about-guide{margin-right:auto;align-self:center;font-size:13px}
+@media(max-width:1000px){.brand-group{gap:8px}.topbar{gap:14px;padding-inline:16px}.top-actions #save-status{display:none}}
