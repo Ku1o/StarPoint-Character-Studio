@@ -50,7 +50,7 @@ python build_distribution.py --output build/release-0.7.1
 python distribution_sources.py --output build/source-export
 ```
 
-发布前在导出的独立目录运行检查和构建，验证它没有依赖原 MOD 目录回退路径。预览版本在 GitHub Releases 标记为 Pre-release；程序 ZIP 与校验文件作为附件，官方资源包保持独立。
+发布前在导出的独立目录运行检查和构建，验证它没有依赖原 MOD 目录回退路径。预览版本在 GitHub Releases 标记为 Pre-release；公开下载附件只提供程序 ZIP 和独立资源 ZIP，不上传单独 `.sha256` 文件；本地校验文件及逐文件记录用于维护核验。
 
 ## 修改与兼容
 
@@ -59,3 +59,12 @@ python distribution_sources.py --output build/source-export
 工程格式与游戏接入契约分别由 `studio_core.py` 和 `character_contract.py` 维护。保留旧工程兼容和原始字段，不把草稿标记成游戏已验收。`core/` 的适配需保留来源声明，并更新其变更说明；原项目的接口变化应分别验证 MOD 内入口和独立入口。
 
 资源库生成依赖原项目中另行维护的只读官方基线和资源工具，不是构建本工具的前置条件。已有模板和定义目录按各自 schema、版本和哈希校验；更新工具不得重写用户的工程或资源库。
+
+
+## 角色资源发布
+
+角色资源保留在 Releases 附件中，不写入 Git 源码或程序 ZIP。当前 1.4.54-r3 库约 3.49 GiB，按 GitHub 单文件必须小于 2 GiB 的限制分为 `StarPoint-CN-Character-Resources-1.4.54-r3-1of2.zip` 和 `StarPoint-CN-Character-Resources-1.4.54-r3-2of2.zip`。
+
+两卷都是普通 ZIP，文件名集合互不重叠，解压到同一目录后组成完整的 `templates/` 和 `definitions/`。原始角色包、音频包、缩略图及定义文件的字节保持一致，只更新安装说明和分卷元数据；仍沿用资源版本 1.4.54-r3。
+
+后续资源发布需逐文件核验两卷并集与完整资源清单一致、角色数量和版本一致、每卷小于附件限制；上传完成后核对远端附件大小和摘要。不要仅按下载数量声称完整，也不要在新版本中重新上传单独 `.sha256` 附件。GitHub 自动生成的两份 Source code 链接保留，创作者无需下载。

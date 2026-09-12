@@ -19,9 +19,19 @@
 
 ## 工具与资源包分开
 
-本仓库与工具 ZIP **不包含官方角色资源或个人工程**。制作原创角色无需官方素材包。
+Git 源码与工具 ZIP **不包含官方角色资源或个人工程**；官方资源只作为独立 Release 附件提供。制作原创角色无需官方素材包。
 
-如已取得配套的 `StarPoint-CN-Character-Resources-1.4.54-r3.zip`，把其中两个目录放到 EXE 旁：
+官方角色资源已作为本仓库的 Release 附件提供，和工具分开下载：
+
+| 下载项 | 说明 |
+| --- | --- |
+| [Windows 工具 ZIP](https://github.com/Ku1o/StarPoint-Character-Studio/releases/download/v0.7.1/StarPoint-Character-Studio-0.7.1-Windows.zip) | 先完整解压，双击 EXE 使用 |
+| [角色资源 1/2](https://github.com/Ku1o/StarPoint-Character-Studio/releases/download/v0.7.1/StarPoint-CN-Character-Resources-1.4.54-r3-1of2.zip) | 与 2/2 都要下载，内容解压到工具目录 |
+| [角色资源 2/2](https://github.com/Ku1o/StarPoint-Character-Studio/releases/download/v0.7.1/StarPoint-CN-Character-Resources-1.4.54-r3-2of2.zip) | 与 1/2 都要下载，内容解压到同一个工具目录 |
+
+资源总量约 3.49 GiB，因 [GitHub 单附件大小限制](https://docs.github.com/en/repositories/releasing-projects-on-github/about-releases)，分成两份普通 ZIP（每份约 1.74 GiB）。**两份都解压到工具目录即可，不需要合并压缩文件，也无需另装解压软件。** 选择「解压全部」时将目标设为工具目录，避免额外套一层 `1of2` / `2of2` 文件夹。
+
+两卷装好后重新打开工具。最终目录应为：
 
 ```text
 星点角色工坊/
@@ -32,7 +42,9 @@
   projects/        自动建立的个人创作工程
 ```
 
-资源包另行提供；目前本仓库不提供它的下载。该配套版本覆盖国服 1.4.54 的 505 个角色及特殊条目，资源缺项和预览限制会在模板中分别显示。模板新建后复制为独立工程，后续编辑不会修改模板库。
+已安装完整 `StarPoint-CN-Character-Resources-1.4.54-r3.zip` 的用户无需重新下载；本次只调整网上分卷方式。该配套版本覆盖国服 1.4.54 的 505 个角色及特殊条目，资源缺项和预览限制会在模板中分别显示。模板新建后复制为独立工程，后续编辑不会修改模板库。
+
+页面下方的 `Source code (zip / tar.gz)` 是 GitHub 自动提供的源码；直接使用 Windows 工具无需下载它们，也无需单独下载校验文件。
 
 ## 可以制作什么
 
