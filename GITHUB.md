@@ -2,7 +2,7 @@
 
 公开仓库：[Ku1o/StarPoint-Character-Studio](https://github.com/Ku1o/StarPoint-Character-Studio)。这是从明确源码文件清单建立的独立仓库，不携带原服务端工作区或其 Git 历史。
 
-当前公开源码为 0.7.2 预览版。工具面向角色创作者，官方角色资源包、个人工程和程序源码分开管理；资源包不进入 Git 历史，也不随程序 ZIP 自动打包。
+当前公开源码和预览 Release 为 0.7.2。工具面向角色创作者，官方角色资源包、个人工程和程序源码分开管理；资源包不进入 Git 历史，也不随程序 ZIP 自动打包。
 
 ## 目录
 
@@ -75,6 +75,6 @@ python distribution_sources.py --output build/source-export
 
 角色资源保留在 Releases 附件中，不写入 Git 源码或程序 ZIP。当前 1.4.54-r3 库约 3.49 GiB，按 GitHub 单文件必须小于 2 GiB 的限制分为 `StarPoint-CN-Character-Resources-1.4.54-r3-1of2.zip` 和 `StarPoint-CN-Character-Resources-1.4.54-r3-2of2.zip`。
 
-两卷都是普通 ZIP，文件名集合互不重叠，解压到同一目录后组成完整的 `templates/` 和 `definitions/`。原始角色包、音频包、缩略图及定义文件的字节保持一致，只更新安装说明和分卷元数据；仍沿用资源版本 1.4.54-r3。
+两卷都是普通 ZIP，文件名集合互不重叠，解压到同一目录后组成完整的 `templates/` 和 `definitions/`。原始角色包、音频包、缩略图及定义文件的字节保持一致，只更新安装说明和分卷元数据；仍沿用资源版本 1.4.54-r3。v0.7.2 Release 继续引用 v0.7.1 中已上传的两卷资源，不重复上传相同的约 3.49 GiB 数据。
 
 后续资源发布需逐文件核验两卷并集与完整资源清单一致、角色数量和版本一致、每卷小于附件限制；上传完成后核对远端附件大小和摘要。不要仅按下载数量声称完整，也不要在新版本中重新上传单独 `.sha256` 附件。GitHub 自动生成的两份 Source code 链接保留，创作者无需下载。
