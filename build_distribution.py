@@ -60,12 +60,19 @@ def main():
     command.append(str(HERE / "studio.py"))
     subprocess.run(command, check=True, timeout=600)
     folder = output / "portable" / "星点角色工坊"
+    # .NET Framework otherwise rejects bundled Python.NET/WebView2 assemblies
+    # when Windows propagated the downloaded ZIP's Internet-zone mark.
+    shutil.copy2(HERE / "starpoint-runtime.config", folder / "星点角色工坊.exe.config")
+    # The .NET loader reads the config beside the frozen EXE; bundled Python
+    # and WebView2 binaries remain under _internal.
     for relative in ("webview/js/api.js", "webview/lib/Microsoft.Web.WebView2.Core.dll",
                      "webview/lib/Microsoft.Web.WebView2.WinForms.dll",
                      "webview/lib/runtimes/win-x64/native/WebView2Loader.dll",
                      "pythonnet/runtime/Python.Runtime.dll", "clr_loader/ffi/dlls/amd64/ClrLoader.dll", "studio.ico"):
         if not (folder / "_internal" / relative).is_file():
             raise SystemExit("桌面运行依赖漏打包：" + relative)
+    if not (folder / "星点角色工坊.exe.config").is_file():
+        raise SystemExit("桌面运行依赖漏打包：星点角色工坊.exe.config")
     shutil.copy2(HERE / "docs" / "USER_GUIDE.md", folder / "使用说明.md")
     shutil.copy2(HERE / "README.md", folder / "README.md")
     shutil.copy2(HERE / "NOTICE.md", folder / "来源声明.md")
@@ -89,7 +96,7 @@ def main():
             shutil.copy2(file, notices / file.name)
     sources = folder / "source"
     export_source(sources)
-    (folder / "双击使用.txt").write_text("完整解压后，双击 星点角色工坊.exe。工作台显示在独立桌面窗口与任务栏中。\n再次双击会唤回已打开的同一窗口，不会重复启动一套服务。\n点击窗口右上角 × 或工具的电源按钮，保存成功后退出整个程序；保存失败会保留窗口。\n无需安装 Python、原 MOD 修改器或游戏服务器。桌面窗口使用系统 Microsoft Edge WebView2 Runtime 和 .NET Framework 4.6.2+；Windows 11 通常已提供，离线使用前请确保组件已安装。\n创作者只需工具与完整角色资源两份 ZIP：把资源包中的 templates 和 definitions 文件夹一起放在本 EXE 旁边，即可基于官方模板新建角色。没有素材库也可制作原创角色。\n工程保存在本目录 projects 文件夹，也可导出 .wfchar.zip 备份。\n\n当前为独立制作版：包含图片制作要求、多帧编辑、技能声音事件、动画完整显示、技能组合及编译回读预览；不自动发布到游戏。模板复杂特效与原始资源缺项会逐项显示。\n", encoding="utf-8")
+    (folder / "双击使用.txt").write_text("完整解压后，双击 星点角色工坊.exe。工作台显示在独立桌面窗口与任务栏中。\n再次双击会唤回已打开的同一窗口，不会重复启动一套服务。\n点击窗口右上角 × 或工具的电源按钮，保存成功后退出整个程序；保存失败会保留窗口。\n无需安装 Python、原 MOD 修改器或游戏服务器。桌面窗口使用系统 Microsoft Edge WebView2 Runtime 和 .NET Framework 4.6.2+；Windows 11 通常已提供，离线使用前请确保组件已安装。\n创作者按工具与完整角色资源两类下载，GitHub 资源分为两份普通 ZIP，两份均需解压：把资源包中的 templates 和 definitions 文件夹一起放在本 EXE 旁边，即可基于官方模板新建角色。没有素材库也可制作原创角色。\n工程保存在本目录 projects 文件夹，也可导出 .wfchar.zip 备份。\n升级时先在旧版保存并退出，把新版完整解压到新目录，打开“工程与升级”选择旧工具文件夹迁入。画稿、动作、特效、声音、能力与历史都会复制，旧目录保留。templates 和 definitions 可继续使用原来下载的素材库，另行复制到新版 EXE 旁。不要只替换 EXE 或覆盖旧目录。\n自动历史记录随 projects 保存；要保留完整历史，请把整个 projects 文件夹备份到其他位置。\n\n当前为独立制作版：包含图片制作要求、多帧编辑、技能声音事件、动画完整显示、技能组合及编译回读预览；不自动发布到游戏。模板复杂特效与原始资源缺项会逐项显示。\n", encoding="utf-8")
     (folder / "完整角色资源说明.txt").write_text("完整角色资源包已合并图片、动作、特效、声音与角色定义。将其中 templates 和 definitions 两个文件夹一起放到 EXE 旁。旧版小型角色定义 ZIP 仍可单独导入。\n可在「技能与能力 → 自由组合 / 拆解与组合」中独立配置条件、触发和效果，也可从词条库单独取材；导出的工程可在 MOD 的角色工坊模块继续使用。\n能力草稿通过原 MOD 格式编译和回读，但尚未分配新游戏 ID，不能覆盖游戏主表。完整战斗技能预览仍未实现。\n", encoding="utf-8")
     manifest = {"version": VERSION, "created": datetime.now().isoformat(), "runtimePackages": package_versions, "sourceModules": {name: hashlib.sha256((MOD / name).read_bytes()).hexdigest() for name in CORE + CORE_DATA}, "files": []}
     for file in sorted(folder.rglob("*")):

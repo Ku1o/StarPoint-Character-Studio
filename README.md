@@ -2,9 +2,13 @@
 
 面向角色创作者的 Windows 本地工作台：从官方参考模板或原创工程开始，制作立绘、界面图片、像素动作、技能特效、声音与能力草稿。
 
-**当前版本：0.7.1 预览版。** 工具基于 [kuronzzhan-droid/startpoint-cn-mod-tools（原 MOD 修改器）](https://github.com/kuronzzhan-droid/startpoint-cn-mod-tools) 开发，复用并扩展资源编码、动画预览和能力编辑实现。源码采用 GPLv3，见 [来源声明](NOTICE.md) 和 [LICENSE](LICENSE)。
+**当前源码版本：0.7.2 预览版。** 工具基于 [kuronzzhan-droid/startpoint-cn-mod-tools（原 MOD 修改器）](https://github.com/kuronzzhan-droid/startpoint-cn-mod-tools) 开发，复用并扩展资源编码、动画预览和能力编辑实现。源码采用 GPLv3，见 [来源声明](NOTICE.md) 和 [LICENSE](LICENSE)。
 
 [下载 Windows 版](https://github.com/Ku1o/StarPoint-Character-Studio/releases) · [完整使用说明](docs/USER_GUIDE.md) · [更新记录](CHANGELOG.md) · [反馈问题](https://github.com/Ku1o/StarPoint-Character-Studio/issues)
+
+## 0.7.2 预览版：工程升级与数据保留
+
+当前源码新增「工程与升级」入口：在旧版保存并退出后，将新版解压到新目录，选择旧版目录迁入。完整复制工程、素材和历史，原目录保留，编号冲突另建副本。保存前自动保留原始记录，恢复历史也会另建副本；不支持的格式不会写回。官方资源库仍独立保留，可继续使用已下载的资源。详见 [使用说明](docs/USER_GUIDE.md#常见问题)。已发布的 v0.7.1 安装包仍需手动复制完整 `projects/`；本地 0.7.2 候选版已经加入这些入口。
 
 ## 解压后使用
 

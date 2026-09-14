@@ -169,8 +169,9 @@ class ProjectStore:
                 try:
                     p = self.load(item.name)
                     result.append({k: p[k] for k in ("id", "name", "kind", "updated", "revision")})
-                except (OSError, ValueError, KeyError):
-                    continue
+                except (OSError, ValueError, KeyError, TypeError) as exc:
+                    result.append({"id": item.name, "name": item.name, "kind": "recovery",
+                                   "updated": 0, "revision": 0, "error": str(exc)})
         return sorted(result, key=lambda p: p["updated"], reverse=True)
 
     def create(self, name, kind="original"):
@@ -181,20 +182,23 @@ class ProjectStore:
 
     def load(self, pid):
         try:
-            p = json.loads((self.directory(pid) / "project.json").read_text("utf-8"))
+            from project_storage import check_format, safe_child
+            p = check_format(json.loads(safe_child(self.directory(pid), "project.json").read_bytes()))
+            if p.get("id") != pid:
+                raise StudioError("工程编号与文件夹不一致，请从历史记录恢复副本")
             p.setdefault("sounds", [])
             from portrait_editor import hydrate
             hydrate(self, p)
             return p
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise StudioError("工程记录损坏，请在“工程与升级”中恢复历史副本") from exc
         except FileNotFoundError as exc:
             raise StudioError("找不到这个工程") from exc
 
     def _write(self, p):
-        directory = self.directory(p["id"])
-        temporary = directory / "project.pending"
-        temporary.write_bytes(json_bytes(p))
-        temporary.replace(directory / "project.json")
-        self.asset_catalog_cache.pop(p["id"], None)
+        from project_storage import persist
+        with self.lock:
+            persist(self, p)
 
     def save(self, incoming):
         with self.lock:
@@ -208,9 +212,6 @@ class ProjectStore:
             if p.get("nativeGameplay") and old.get("nativeGameplay"):
                 p["nativeGameplay"]["source"] = old["nativeGameplay"]["source"]
             validate(p)
-            history = self.directory(p["id"]) / "history"
-            history.mkdir(exist_ok=True)
-            (history / f"{old['revision']:06}.json").write_bytes(json_bytes(old))
             p["revision"] += 1
             p["updated"] = time.time()
             self._write(p)
@@ -320,10 +321,9 @@ class ProjectStore:
         if len(matches) == 1:
             name = matches[0]
             prefix = name.removesuffix("project.json")
-            p = json.loads(files[name])
+            from project_storage import check_format
+            p = check_format(json.loads(files[name]))
             p.setdefault("sounds", [])
-            if p.get("schema") != "starpoint-character-studio-v1":
-                raise StudioError("工程版本暂不支持")
             p["id"] = uuid.uuid4().hex
             p["revision"] = 0
             p["updated"] = time.time()
@@ -556,6 +556,8 @@ def native_commands(frames, parts, cells, group, tick, matrix=(1, 0, 0, 1, 0, 0)
 
 
 def validate(p):
+    from project_storage import check_format
+    check_format(p)
     from native_gameplay import validate_native
     validate_native(p.get("nativeGameplay"))
     if p.get("schema") != "starpoint-character-studio-v1":

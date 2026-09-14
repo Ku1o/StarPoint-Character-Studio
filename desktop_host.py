@@ -183,6 +183,10 @@ def run_desktop(server, address: str, instance: WindowsInstance, base: Path):
     server.desktop_close_cancel = gate.cancel
     server.desktop_ready = page_ready.set
     server.desktop_mode = True
+    def choose_project_directory():
+        selected = window.create_file_dialog(webview.FileDialog.FOLDER)
+        return selected[0] if selected else None
+    server.choose_project_directory = choose_project_directory
     window.events.closing += gate.request
 
     def shown():

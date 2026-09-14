@@ -1,7 +1,7 @@
 """Product identity shared by the service, desktop window and distribution."""
 
 NAME = "星点角色工坊"
-VERSION = "0.7.1"
+VERSION = "0.7.2"
 CHANNEL = "预览版"
 TITLE = f"{NAME} v{VERSION} · {CHANNEL}"
 REPOSITORY_URL = "https://github.com/Ku1o/StarPoint-Character-Studio"

@@ -86,7 +86,14 @@ def create_server(root, port=0, templates=None, definitions=None, parent_origin=
                 def arg(key):
                     return args.get(key, [""])[0]
                 if url.path == "/api/session":
-                    self.respond({"token": token, "projects": store.list(), "version": VERSION, "app": public_info(), "rules": RULES, "desktop": self.server.desktop_mode, "host": "mod" if parent_origin else "standalone", "parentOrigin": parent_origin})
+                    self.respond({"token": token, "projects": store.list(), "version": VERSION, "app": public_info(), "rules": RULES, "desktop": self.server.desktop_mode, "host": "mod" if parent_origin else "standalone", "parentOrigin": parent_origin, "projectDirectory": str(store.root)})
+                elif url.path == "/api/project-history":
+                    from project_storage import history
+                    self.respond({"records": history(store, arg("id"))})
+                elif url.path == "/project-storage.js":
+                    self.respond((APP / "web" / "project-storage.js").read_bytes(), mime="application/javascript")
+                elif url.path == "/project-storage.css":
+                    self.respond((APP / "web" / "project-storage.css").read_bytes(), mime="text/css")
                 elif url.path == "/api/user-guide":
                     self.respond((APP / "docs" / "USER_GUIDE.md").read_bytes(), mime="text/markdown; charset=utf-8", filename="星点角色工坊-使用说明.md")
                 elif url.path == "/api/definitions":
@@ -201,6 +208,15 @@ def create_server(root, port=0, templates=None, definitions=None, parent_origin=
                     result = ability_library.append(store,data['id'],data['revision'],data['slot'],data['key'],data['fingerprint'],data.get('indices'))
                 elif self.path == "/api/import":
                     result = store.import_archive(base64.b64decode(data["data"], validate=True))
+                elif self.path == "/api/upgrade-projects":
+                    from project_storage import upgrade_projects
+                    if not self.server.choose_project_directory:
+                        raise StudioError("请在独立桌面窗口迁入文件夹；浏览器和 MOD 内可导入旧版导出的工程包")
+                    selected = self.server.choose_project_directory()
+                    result = upgrade_projects(store, selected) if selected else {"cancelled": True}
+                elif self.path == "/api/project-recover":
+                    from project_storage import recover
+                    result = recover(store, data["id"], data["file"])
                 elif self.path == "/api/template-create":
                     definitions = definition_library.load()
                     result = store.import_archive(library.archive(data["id"]))
@@ -237,6 +253,7 @@ def create_server(root, port=0, templates=None, definitions=None, parent_origin=
     server.studio_version = VERSION
     server.definition_library = definition_library
     server.desktop_mode = False
+    server.choose_project_directory = None
     server.desktop_ready = lambda: None
     server.desktop_close_cancel = lambda: None
     server.studio_stopped = threading.Event()
