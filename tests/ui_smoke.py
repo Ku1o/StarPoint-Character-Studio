@@ -58,6 +58,16 @@ def main():
             page.locator("#dialog-name").fill("原创流程验收")
             page.locator("#dialog-ok").click()
             page.locator("#identity-name").wait_for()
+            page.locator('[data-page="production"]').click()
+            page.locator('#pb-author-title').fill('前台验收称号')
+            page.locator('#pb-author-title').dispatch_event('change')
+            page.locator('[data-pb-path="resources.0.assetIds"]').fill('asset-one, asset-two')
+            page.locator('[data-pb-path="resources.0.assetIds"]').dispatch_event('change')
+            wait_for(page, "S.p.productionBrief.author.title==='前台验收称号' && JSON.stringify(S.p.productionBrief.resources[0].assetIds)==='[\"asset-one\",\"asset-two\"]'")
+            page.locator('#save').click()
+            wait_for(page, "!S.dirty && !S.savePromise")
+            assert page.locator('#production-export').get_attribute('download') is not None
+            summary['productionBrief'] = page.evaluate("({title:S.p.productionBrief.author.title, assetIds:S.p.productionBrief.resources[0].assetIds})")
             page.locator('[data-page="animations"]').click()
             assert page.locator('[data-animation]').count() == 11
             assert page.evaluate("S.p.animations.every(a=>a.clips.length===0&&a.purpose)")

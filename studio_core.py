@@ -22,6 +22,7 @@ from asset_rules import PIXEL_EDGE, EFFECT_EDGE, FILE_BYTES
 from audio_rules import voice_usage, USAGES
 from action_presets import default_animations
 from character_contract import normalize_gameplay
+from production_brief import default_production_brief, normalize_production_brief, hydrate_from_project, checks as production_checks, export_handoff
 
 MAX_ARCHIVE = 256 * 1024 * 1024
 MAX_IMAGE_PIXELS = 32_000_000
@@ -142,7 +143,8 @@ def fresh_project(name="未命名角色", kind="original"):
             "kind": kind, "revision": 0, "updated": time.time(), "identity": {"title": "", "element": "火", "rarity": 5, "race": "人", "role": "", "description": "", "author": "", "source": "", "code": "new_character"},
             "template": None, "assets": {}, "portraits": {"base": None, "evolved": None}, "crops": {},
             "animations": default_animations() if kind == "original" else [], "effects": [], "scene": {"duration": 120, "tracks": []}, "voices": [],
-            "sounds": [], "notes": "", "warnings": [], "referenceFiles": [], "skill": {"name": "", "description": "", "implementation": "待接入"}}
+            "sounds": [], "notes": "", "warnings": [], "referenceFiles": [], "skill": {"name": "", "description": "", "implementation": "待接入"},
+            "productionBrief": default_production_brief()}
 
 
 class ProjectStore:
@@ -187,6 +189,13 @@ class ProjectStore:
             if p.get("id") != pid:
                 raise StudioError("工程编号与文件夹不一致，请从历史记录恢复副本")
             p.setdefault("sounds", [])
+            # Additive migration: old projects receive an in-memory default and
+            # persist it on their next successful save; the raw JSON is untouched
+            # until then and all legacy fields remain intact.
+            had_production_brief = "productionBrief" in p
+            p["productionBrief"] = normalize_production_brief(p)
+            if not had_production_brief and p.get("template"):
+                hydrate_from_project(p)
             from portrait_editor import hydrate
             hydrate(self, p)
             return p
@@ -209,6 +218,8 @@ class ProjectStore:
             p["assets"] = old["assets"]
             p["referenceFiles"] = old.get("referenceFiles", [])
             p["uiSources"] = old.get("uiSources", {})
+            if "productionBrief" not in p:
+                p["productionBrief"] = copy.deepcopy(old.get("productionBrief", default_production_brief()))
             if p.get("nativeGameplay") and old.get("nativeGameplay"):
                 p["nativeGameplay"]["source"] = old["nativeGameplay"]["source"]
             validate(p)
@@ -313,6 +324,7 @@ class ProjectStore:
             if not path.is_absolute() and ".." not in path.parts and "\\" not in rel:
                 files["reference/" + rel] = (self.directory(pid) / "reference" / Path(rel)).read_bytes()
         files["交接说明.txt"] = ("星点角色工坊可编辑工程。用“打开工程 / 参考包”导入继续制作。\n这是创作工程，不是可直接安装的游戏补丁。\n").encode("utf-8")
+        files["制作交接.json"] = json_bytes(export_handoff(p))
         return make_zip(files)
 
     def import_archive(self, raw):
@@ -327,6 +339,7 @@ class ProjectStore:
             p["id"] = uuid.uuid4().hex
             p["revision"] = 0
             p["updated"] = time.time()
+            p["productionBrief"] = normalize_production_brief(p)
             validate(p)
             payloads = {}
             for aid, a in p["assets"].items():
@@ -446,6 +459,7 @@ class ProjectStore:
                         clips.append(clip)
                 p["animations"].append({"id": uuid.uuid4().hex[:12], "name": LABELS.get(seq["name"], seq["name"]), "slot": seq["name"], "variant": variant, "kind": seq.get("kind", "once"), "fps": 60, "runtimeSpeed": 0.5 if seq["name"] in ("walk_front", "walk_back") else 1, "frameScale": frame.get("scale", 6), "clips": clips})
         self.import_effects(p, reference)
+        hydrate_from_project(p)
         self._write(p)
         return p
 
@@ -562,6 +576,7 @@ def validate(p):
     validate_native(p.get("nativeGameplay"))
     if p.get("schema") != "starpoint-character-studio-v1":
         raise StudioError("工程格式不受支持")
+    p["productionBrief"] = normalize_production_brief(p)
     identifier(p.get("id"))
     if "gameplay" in p:
         normalize_gameplay(p)
@@ -684,5 +699,9 @@ def project_checks(p):
                 issues.append({"level": "todo", "page": page, "id": anim["id"], "text": anim["name"] + "没有可播放画面"})
     for warning in p.get("warnings", []):
         issues.append({"level": "warning", "page": "checks", "text": warning})
+    issues.extend(production_checks(p))
     issues.append({"level": "info", "page": "identity", "text": "游戏接入待完成：角色与技能数据、平台纹理、存档兼容及真机验收由制作方确认"})
-    return {"issues": issues, "assets": len(p["assets"]), "animations": len(p["animations"]), "effects": len(p["effects"]), "gameReady": False}
+    brief = p.get("productionBrief") or default_production_brief()
+    return {"issues": issues, "assets": len(p["assets"]), "animations": len(p["animations"]), "effects": len(p["effects"]),
+            "production": {"status": brief["workflow"]["status"], "resources": len(brief["resources"]), "voices": len(brief["voices"])},
+            "gameReady": False}

@@ -51,6 +51,12 @@ class ContractTests(unittest.TestCase):
         result["gameplayDesign"]["abilities"][1]["description"] = "返回值编辑"
         self.assertEqual(self.p, before)
 
+    def test_contract_carries_production_brief_checks_for_maker_handoff(self):
+        self.p["productionBrief"] = {"author": {"title": "制作交接"}}
+        result = export_contract(self.store, self.p)
+        self.assertEqual(result["productionBrief"]["author"]["title"], "制作交接")
+        self.assertTrue(any(item["page"] == "production" for item in result["productionChecks"]))
+
     def test_art_only_official_pack_stays_missing_and_program_hash_is_explicit(self):
         self.p.update(kind="template", template={"id": "10", "code": "white_tiger"})
         tree = ["ActionDsl", 3, ["Block", [["Event", ["Wait", 87, "*", ["Block", []]]]]]]

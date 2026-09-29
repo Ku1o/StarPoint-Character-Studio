@@ -122,6 +122,10 @@ def create_server(root, port=0, templates=None, definitions=None, parent_origin=
                 elif url.path == "/api/export":
                     p = store.load(arg("id"))
                     self.respond(store.export(p["id"]), mime="application/zip", filename=p["name"] + ".wfchar.zip")
+                elif url.path == "/api/production-handoff":
+                    from production_brief import export_handoff
+                    p = store.load(arg("id"))
+                    self.respond(json_bytes(export_handoff(p)), mime="application/json; charset=utf-8", filename=p["name"] + "-制作交接.json")
                 elif url.path == "/api/compile-export":
                     raw, _ = compile_project(store, arg("id"))
                     self.respond(raw, mime="application/zip", filename="角色美术编译产物.zip")
@@ -143,7 +147,7 @@ def create_server(root, port=0, templates=None, definitions=None, parent_origin=
                         self.respond(json_bytes(records), filename="atlas.json")
                     else:
                         self.respond(png_bytes(sheet), mime="image/png", filename="atlas.png")
-                elif url.path in ("/", "/index.html", "/app.js", "/compiled-preview.js", "/preview-layout.js", "/authoring-guide.js", "/template-library.js", "/audio-workbench.js", "/sound-preview.js", "/desktop-window.js", "/pixel-import.js", "/pixel-import.css", "/skill-workbench.js", "/skill-workbench.css", "/character-workflow.js", "/native-workbench.js", "/native-workbench.css", "/mod-host.js", "/editor-scroll.js", "/ability-picker.js", "/effect-channels.js", "/effect-channels.css", "/ability-composition.js", "/ability-composition.css", "/portrait-workbench.js", "/portrait-workbench.css", "/image-workbench.js", "/style.css", "/about-tool.js", "/about-tool.css"):
+                elif url.path in ("/", "/index.html", "/app.js", "/compiled-preview.js", "/preview-layout.js", "/authoring-guide.js", "/template-library.js", "/audio-workbench.js", "/sound-preview.js", "/desktop-window.js", "/pixel-import.js", "/pixel-import.css", "/skill-workbench.js", "/skill-workbench.css", "/character-workflow.js", "/production-brief.js", "/production-brief.css", "/native-workbench.js", "/native-workbench.css", "/mod-host.js", "/editor-scroll.js", "/ability-picker.js", "/effect-channels.js", "/effect-channels.css", "/ability-composition.js", "/ability-composition.css", "/portrait-workbench.js", "/portrait-workbench.css", "/image-workbench.js", "/style.css", "/about-tool.js", "/about-tool.css"):
                     name = "index.html" if url.path == "/" else url.path.removeprefix("/")
                     self.respond((APP / "web" / name).read_bytes(), mime=mimetypes.guess_type(name)[0] or "text/plain")
                 elif url.path == "/favicon.ico":

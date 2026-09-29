@@ -2,7 +2,7 @@
 
 公开仓库：[Ku1o/StarPoint-Character-Studio](https://github.com/Ku1o/StarPoint-Character-Studio)。这是从明确源码文件清单建立的独立仓库，不携带原服务端工作区或其 Git 历史。
 
-当前公开源码和预览 Release 为 0.7.2。工具面向角色创作者，官方角色资源包、个人工程和程序源码分开管理；资源包不进入 Git 历史，也不随程序 ZIP 自动打包。
+当前公开源码和预览 Release 为 0.7.3。工具面向角色创作者，官方角色资源包、个人工程和程序源码分开管理；资源包不进入 Git 历史，也不随程序 ZIP 自动打包。
 
 ## 目录
 
@@ -41,12 +41,12 @@ node --test tests/preview_layout.test.js
 
 ```powershell
 python -m pip install -r requirements-build.txt
-python build_distribution.py --output build/release-0.7.2
+python build_distribution.py --output build/release-0.7.3
 ```
 
-输出目录必须尚不存在。构建生成可解压使用的程序 ZIP、逐文件清单和本地维护用的校验摘要；公开 Release 只上传程序 ZIP，不上传单独 `.sha256` 附件。ZIP 中保留对应的 `source/` 与第三方许可。代码、版本号、使用说明和源码白名单一并打包，不扫描旁边的模板或工程。
+输出目录必须尚不存在。构建生成可解压使用的程序 ZIP 和随包逐文件清单；构建过程会回读 ZIP 并校验内容，公开 Release 与本地交付均不附带独立 `.sha256` 文件。ZIP 中保留对应的 `source/` 与第三方许可。代码、版本号、使用说明和源码白名单一并打包，不扫描旁边的模板或工程。
 
-0.7.2 的 Windows 包会把 `星点角色工坊.exe.config` 放在 EXE 同级，允许 .NET Framework 加载随包携带的 Python.NET 与 WebView2 托管程序集。这样 Windows 从下载 ZIP 传播 Internet 区域标记时，创作者不需要逐个 DLL 解除锁定。配置只针对工具明确携带的本地依赖，不代表可以加载不受信任的外部程序集。
+0.7.3 的 Windows 包会把 `星点角色工坊.exe.config` 放在 EXE 同级，允许 .NET Framework 加载随包携带的 Python.NET 与 WebView2 托管程序集。这样 Windows 从下载 ZIP 传播 Internet 区域标记时，创作者不需要逐个 DLL 解除锁定。配置只针对工具明确携带的本地依赖，不代表可以加载不受信任的外部程序集。
 
 若只需导出干净源码：
 
@@ -64,7 +64,7 @@ python distribution_sources.py --output build/source-export
 
 ### 工程升级兼容
 
-0.7.2 新增「工程与升级」入口。创作者在旧版保存并退出后，将新版完整解压到新目录，从新版选择旧工具目录或其中的 `projects/` 迁入。迁入前会校验工程格式、素材和历史；成功后复制到新目录，旧目录保留，编号冲突会建立副本，重复迁入会跳过相同版本。保存覆盖前保留原始 JSON，历史恢复也建立副本；损坏或不支持的工程留在列表中并提示恢复，不会被静默删除。
+0.7.2 新增「工程与升级」入口；0.7.3 延续该迁移机制并加入作者填写与制作交接改进。创作者在旧版保存并退出后，将新版完整解压到新目录，从新版选择旧工具目录或其中的 `projects/` 迁入。迁入前会校验工程格式、素材和历史；成功后复制到新目录，旧目录保留，编号冲突会建立副本，重复迁入会跳过相同版本。保存覆盖前保留原始 JSON，历史恢复也建立副本；损坏或不支持的工程留在列表中并提示恢复，不会被静默删除。
 
 升级不会重新下载官方模板。`templates/` 与 `definitions/` 可以继续使用原资源包；工程创建时复制的素材和用户编辑独立保存。发布说明必须同时写清旧版回退方式：保留旧工具和旧 `projects/`，不要把未来格式写回旧程序。
 
@@ -75,6 +75,6 @@ python distribution_sources.py --output build/source-export
 
 角色资源保留在 Releases 附件中，不写入 Git 源码或程序 ZIP。当前 1.4.54-r3 库约 3.49 GiB，按 GitHub 单文件必须小于 2 GiB 的限制分为 `StarPoint-CN-Character-Resources-1.4.54-r3-1of2.zip` 和 `StarPoint-CN-Character-Resources-1.4.54-r3-2of2.zip`。
 
-两卷都是普通 ZIP，文件名集合互不重叠，解压到同一目录后组成完整的 `templates/` 和 `definitions/`。原始角色包、音频包、缩略图及定义文件的字节保持一致，只更新安装说明和分卷元数据；仍沿用资源版本 1.4.54-r3。v0.7.2 Release 继续引用 v0.7.1 中已上传的两卷资源，不重复上传相同的约 3.49 GiB 数据。
+两卷都是普通 ZIP，文件名集合互不重叠，解压到同一目录后组成完整的 `templates/` 和 `definitions/`。原始角色包、音频包、缩略图及定义文件的字节保持一致，只更新安装说明和分卷元数据；仍沿用资源版本 1.4.54-r3。v0.7.3 Release 继续引用 v0.7.1 中已上传的两卷资源，不重复上传相同的约 3.49 GiB 数据。
 
 后续资源发布需逐文件核验两卷并集与完整资源清单一致、角色数量和版本一致、每卷小于附件限制；上传完成后核对远端附件大小和摘要。不要仅按下载数量声称完整，也不要在新版本中重新上传单独 `.sha256` 附件。GitHub 自动生成的两份 Source code 链接保留，创作者无需下载。

@@ -74,6 +74,7 @@ def main():
     if not (folder / "星点角色工坊.exe.config").is_file():
         raise SystemExit("桌面运行依赖漏打包：星点角色工坊.exe.config")
     shutil.copy2(HERE / "docs" / "USER_GUIDE.md", folder / "使用说明.md")
+    shutil.copy2(HERE / "docs" / "PRODUCTION-WORKFLOW.md", folder / "新角色生产流程.md")
     shutil.copy2(HERE / "README.md", folder / "README.md")
     shutil.copy2(HERE / "NOTICE.md", folder / "来源声明.md")
     shutil.copy2(MOD / "LICENSE", folder / "LICENSE")
@@ -116,7 +117,6 @@ def main():
             if archive.read(info) != (folder / relative).read_bytes():
                 raise SystemExit("分发文件回读不一致")
     digest = hashlib.sha256(archive_path.read_bytes()).hexdigest()
-    archive_path.with_suffix(".zip.sha256").write_text(digest + "  " + archive_path.name + "\n", encoding="ascii")
     print(json.dumps({"folder": str(folder), "zip": str(archive_path), "sha256": digest}, ensure_ascii=False))
 
 

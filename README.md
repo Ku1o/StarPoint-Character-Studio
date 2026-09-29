@@ -2,13 +2,13 @@
 
 面向角色创作者的 Windows 本地工作台：从官方参考模板或原创工程开始，制作立绘、界面图片、像素动作、技能特效、声音与能力草稿。
 
-**当前源码版本：0.7.2 预览版。** 工具基于 [kuronzzhan-droid/startpoint-cn-mod-tools（原 MOD 修改器）](https://github.com/kuronzzhan-droid/startpoint-cn-mod-tools) 开发，复用并扩展资源编码、动画预览和能力编辑实现。源码采用 GPLv3，见 [来源声明](NOTICE.md) 和 [LICENSE](LICENSE)。
+**当前源码版本：0.7.3 预览版。** 工具基于 [kuronzzhan-droid/startpoint-cn-mod-tools（原 MOD 修改器）](https://github.com/kuronzzhan-droid/startpoint-cn-mod-tools) 开发，复用并扩展资源编码、动画预览和能力编辑实现。源码采用 GPLv3，见 [来源声明](NOTICE.md) 和 [LICENSE](LICENSE)。
 
-[下载 Windows 版](https://github.com/Ku1o/StarPoint-Character-Studio/releases) · [完整使用说明](docs/USER_GUIDE.md) · [更新记录](CHANGELOG.md) · [反馈问题](https://github.com/Ku1o/StarPoint-Character-Studio/issues)
+[下载 Windows 版](https://github.com/Ku1o/StarPoint-Character-Studio/releases) · [完整使用说明](docs/USER_GUIDE.md) · [新角色生产流程](docs/PRODUCTION-WORKFLOW.md) · [更新记录](CHANGELOG.md) · [反馈问题](https://github.com/Ku1o/StarPoint-Character-Studio/issues)
 
-## 0.7.2 预览版：工程升级与数据保留
+## 0.7.3 预览版：作者填写与制作交接
 
-当前源码新增「工程与升级」入口：在旧版保存并退出后，将新版解压到新目录，选择旧版目录迁入。完整复制工程、素材和历史，原目录保留，编号冲突另建副本。保存前自动保留原始记录，恢复历史也会另建副本；不支持的格式不会写回。官方资源库仍独立保留，可继续使用已下载的资源。详见 [使用说明](docs/USER_GUIDE.md#常见问题)。v0.7.2 Windows 包已加入这些入口；v0.7.1 用户升级时仍需手动复制完整 `projects/`。
+当前源码新增「工程与升级」入口：在旧版保存并退出后，将新版解压到新目录，选择旧版目录迁入。完整复制工程、素材和历史，原目录保留，编号冲突另建副本。保存前自动保留原始记录，恢复历史也会另建副本；不支持的格式不会写回。官方资源库仍独立保留，可继续使用已下载的资源。详见 [使用说明](docs/USER_GUIDE.md#常见问题)。v0.7.2 已加入这些入口，v0.7.3 继续保留旧工程迁入和数据保护；v0.7.1 用户升级时仍需手动复制完整 `projects/`。
 
 ## 解压后使用
 
@@ -29,7 +29,7 @@ Git 源码与工具 ZIP **不包含官方角色资源或个人工程**；官方�
 
 | 下载项 | 说明 |
 | --- | --- |
-| [Windows 工具 ZIP](https://github.com/Ku1o/StarPoint-Character-Studio/releases/download/v0.7.2/StarPoint-Character-Studio-0.7.2-Windows.zip) | 先完整解压，双击 EXE 使用 |
+| [Windows 工具 ZIP](https://github.com/Ku1o/StarPoint-Character-Studio/releases/download/v0.7.3/StarPoint-Character-Studio-0.7.3-Windows.zip) | 先完整解压，双击 EXE 使用 |
 | [角色资源 1/2](https://github.com/Ku1o/StarPoint-Character-Studio/releases/download/v0.7.1/StarPoint-CN-Character-Resources-1.4.54-r3-1of2.zip) | 与 2/2 都要下载，内容解压到工具目录 |
 | [角色资源 2/2](https://github.com/Ku1o/StarPoint-Character-Studio/releases/download/v0.7.1/StarPoint-CN-Character-Resources-1.4.54-r3-2of2.zip) | 与 1/2 都要下载，内容解压到同一个工具目录 |
 
@@ -46,7 +46,7 @@ Git 源码与工具 ZIP **不包含官方角色资源或个人工程**；官方�
   projects/        自动建立的个人创作工程
 ```
 
-已安装完整 `StarPoint-CN-Character-Resources-1.4.54-r3.zip` 的用户无需重新下载；v0.7.2 沿用 v0.7.1 Release 中的两卷资源附件，不重复上传相同资源。该配套版本覆盖国服 1.4.54 的 505 个角色及特殊条目，资源缺项和预览限制会在模板中分别显示。模板新建后复制为独立工程，后续编辑不会修改模板库。
+已安装完整 `StarPoint-CN-Character-Resources-1.4.54-r3.zip` 的用户无需重新下载；v0.7.3 沿用 v0.7.1 Release 中的两卷资源附件，不重复上传相同资源。该配套版本覆盖国服 1.4.54 的 505 个角色及特殊条目，资源缺项和预览限制会在模板中分别显示。模板新建后复制为独立工程，后续编辑不会修改模板库。
 
 页面下方的 `Source code (zip / tar.gz)` 是 GitHub 自动提供的源码；直接使用 Windows 工具无需下载它们，也无需单独下载校验文件。
 
@@ -58,6 +58,7 @@ Git 源码与工具 ZIP **不包含官方角色资源或个人工程**；官方�
 | 像素动作 | 常用动作槽位，批量 PNG / 目录导入，精灵图切分，帧序、时长和变换编辑，整段播放 |
 | 技能制作 | 序列特效，官方可解析特效的通道编辑与关键帧，多轨道和声音同步预览 |
 | 声音与台词 | 角色语音、技能音效、台词备注、音频事件编排 |
+| 角色制作包 | 作者自然语言填写、资源/语音闭包清单、制作方核验字段、六阶段交接与经验检查 |
 | 技能与能力 | 词条库取材，条件、触发、对象、效果拆解组合，六槽能力设计与校验 |
 | 检查与交付 | 可编辑工程、源素材、离线编译产物、实际图集查看和编译后回读预览 |
 

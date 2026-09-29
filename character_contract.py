@@ -242,6 +242,8 @@ def _programs(store, p):
 
 def export_contract(store, p):
     """Return a versioned, read-only design handoff, never an installable pack."""
+    from production_brief import export_handoff
+
     records = {}
     for label, name in SOURCE_FILES.items():
         record = _read(store, p, name)
@@ -282,12 +284,15 @@ def export_contract(store, p):
                       "sourceLogical": item.get("logical"),
                       "compilerCandidate": asset.get("mime") == "audio/mpeg",
                       "encodingStatus": "requires_compiler_verification"})
+    production = export_handoff(p)
     return {
         "schema": SCHEMA, "schemaVersion": 1,
         "project": {"id": p["id"], "name": p.get("name", ""), "revision": p.get("revision", 0)},
         "identity": copy.deepcopy(p.get("identity", {})), "template": copy.deepcopy(p.get("template")),
         "gameplayDesign": normalize_gameplay(p), "sourceDefinition": _source_definition(p, records),
         "nativeGameplay": copy.deepcopy(native),
+        "productionBrief": copy.deepcopy(production["productionBrief"]),
+        "productionChecks": copy.deepcopy(production["checks"]),
         "sourcePrograms": _programs(store, p),
         "resourceMapping": {"animations": animations, "effects": effects, "audio": audio,
                             "portraits": copy.deepcopy(p.get("portraits", {})),
