@@ -1,0 +1,17 @@
+文件,入口分类,用途,台词文本
+例：ally/join.mp3,ally,join,（示例行，请删除）这里填加入时说的话语
+ally/join.mp3,ally,join,
+ally/evolution.mp3,ally,evolution,
+battle/battle_start_0.mp3,battle,battle_start,
+battle/battle_start_1.mp3,battle,battle_start,
+battle/skill_0.mp3,battle,skill_voice,
+battle/skill_1.mp3,battle,skill_voice,
+battle/skill_ready.mp3,battle,skill_ready,
+battle/power_flip_0.mp3,battle,power_flip,
+battle/power_flip_1.mp3,battle,power_flip,
+battle/outhole_0.mp3,battle,outhole,
+battle/outhole_1.mp3,battle,outhole,
+battle/win_0.mp3,battle,win,
+battle/win_1.mp3,battle,win,
+home/home1.mp3,home,home,
+home/home2.mp3,home,home,

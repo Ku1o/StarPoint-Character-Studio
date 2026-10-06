@@ -1,0 +1,15 @@
+语音按三个入口目录放置：
+
+  ally/   加入 join、进化 evolution
+  battle/ 战斗开始 battle_start、技能喊声 skill_0/1、技能就绪 skill_ready、
+          强化弹射 power_flip_0/1、落穴 outhole_0/1、胜利 win_0/1
+  home/   主页问候（home1、home2…）
+
+可选：login/（登录语音）、words/（剧情语料，仅剧情需要时）
+
+每条语音都要在 语音对照表.csv 登记：文件、入口分类、用途、台词文本。
+
+格式：标准 WAV / MP3 / OGG 均可，不需要自行转码。
+授权：非本人声线、AI 声线请注明授权情况。
+
+注意：本文件只是占位说明，交付前请删除。

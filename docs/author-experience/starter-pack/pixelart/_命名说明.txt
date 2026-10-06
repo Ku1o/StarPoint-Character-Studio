@@ -1,0 +1,31 @@
+像素动画按“一个状态一个目录”放置。每个目录里的帧文件命名示例：
+
+  neutral/neutral_001.png
+  neutral/neutral_002.png
+  ...
+
+状态目录名（必须使用这些名字）：
+  neutral         待机（纯本体）
+  walk_front      向前移动（纯本体）
+  walk_back       向后移动（纯本体）
+  skill_ready     技能准备/开大（可带召唤物，需在动作说明中注明）
+  kachidoki       胜利（纯本体）
+  into_coffin     倒下（纯本体）
+  ghost_raise     灵魂出现（纯本体）
+  ghost_neutral   灵魂待机（纯本体）
+  revive          复活（纯本体）
+  special_land    获取·登场（是否带召唤物需注明）
+  special_pose    获取·定格（是否带召唤物需注明）
+
+可选动作：attack_initial / attack_charge / attack_action / attack_fire /
+          wince_ready / stun_ready / dead
+
+重要规则：
+1. 纯本体帧不带任何后缀；
+2. 带召唤物/附属物的合成帧统一加 _sp 后缀（如 neutral_001_sp.png），
+   并且单独放一套，不要和纯本体帧混在同一目录当一套交；
+3. 基础状态只交纯本体帧——已经出现过往基础状态误用合成帧的事故；
+4. 同动作画布一致、脚底位置一致；单帧 ≤1022 px；不要预先放大；
+5. 每个状态的帧数/顺序/停留/循环方式/是否含附属物，填在 动作说明.md。
+
+注意：本文件只是占位说明，交付前请删除。
