@@ -10,14 +10,54 @@ import json
 import math
 import re
 import zlib
-from PIL import Image, ImageDraw, ImageOps
+from PIL import Image, ImageChops, ImageDraw, ImageOps
 
 from bridge import AMF3Reader, flatomo
 from asset_rules import PIXEL_EDGE, EFFECT_EDGE
 from audio_compile import effect_audio, encoded_sound, sound_path, mp3_decode
 from character_contract import export_contract
 from studio_core import (StudioError, UI_SLOTS, PNG, FAKE_PNG, amf_bytes, image_from,
-                         json_bytes, png_bytes, make_zip, project_checks, validate, atlas_crop, native_commands)
+                         json_bytes, png_bytes, make_zip, project_checks, validate, atlas_crop, native_commands,
+                         asset_variant, animation_variant, declaration_payload)
+
+# 官方/donor 键集（deepcopy 模板 + 编译期断言）。来源：
+# character/ekaki_girl/pixelart/{pixelart.timeline,pixelart.frame,sprite_sheet.atlas}
+# 与既有 MOD cnmod_inaho_midautumn；effect timeline/parts 与官方 skill_unique 同构。
+PIXELART_TIMELINE_TEMPLATE = {"sequences": [], "sounds": [], "points": [], "circles": []}
+EFFECT_TIMELINE_TEMPLATE = {"sequences": [], "sounds": [], "points": [], "circles": [],
+                            "rectangles": [], "matrices": []}
+PIXELART_ATLAS_RECORD_TEMPLATE = {"n": "", "w": 0, "h": 0, "x": 0, "y": 0,
+                                  "fx": 0, "fy": 0, "fw": 256, "fh": 256}
+PIXELART_FRAME_TEMPLATE = {"name": "", "x": -128, "y": -128, "scale": 6, "smoothing": False}
+EFFECT_PARTS_TEMPLATE = {"i": [], "g": [], "m": [], "a": [], "o": [], "t": [], "c": [], "s": 1}
+
+
+def _assert_key_contract(tree, template, label):
+    """编译期键集对齐：产物键集必须与官方模板完全一致（缺键/多键都失败）。"""
+    if not isinstance(tree, dict):
+        raise StudioError(f"{label} 必须是对象（结构契约）")
+    missing = sorted(set(template) - set(tree))
+    extra = sorted(set(tree) - set(template))
+    if missing or extra:
+        raise StudioError(
+            f"{label} 键集与官方模板不一致：缺键 {missing}，多键 {extra}"
+            "（2026-10-06 F1009：timeline 缺 sounds 会让客户端 loadDynamicSoundEffect 抛 #1009）"
+        )
+    return tree
+
+
+def pixelart_timeline(sequences):
+    """官方模板 deepcopy：保证 sequences/sounds/points/circles 四键永不缺。"""
+    timeline = copy.deepcopy(PIXELART_TIMELINE_TEMPLATE)
+    timeline["sequences"] = list(sequences)
+    return _assert_key_contract(timeline, PIXELART_TIMELINE_TEMPLATE, "pixelart.timeline")
+
+
+def effect_timeline(sequences, sounds):
+    timeline = copy.deepcopy(EFFECT_TIMELINE_TEMPLATE)
+    timeline["sequences"] = list(sequences)
+    timeline["sounds"] = list(sounds)
+    return _assert_key_contract(timeline, EFFECT_TIMELINE_TEMPLATE, "effect.timeline")
 
 
 def crop_portrait(store, p, form, slot):
@@ -25,8 +65,8 @@ def crop_portrait(store, p, form, slot):
     return image_from(render(store, p, form, slot))
 
 
-def transformed_cell(store, p, clip):
-    cell = image_from(store.asset_bytes(p, clip["asset"]))
+def transformed_cell(store, p, clip, aid=None):
+    cell = image_from(store.asset_bytes(p, aid or clip["asset"]))
     if clip.get("flip"):
         cell = ImageOps.mirror(cell)
     scale = float(clip.get("scale", 1))
@@ -47,10 +87,154 @@ def transformed_cell(store, p, clip):
     return cell, x, y
 
 
-def compile_pixelart(store, p, animations, variant, code):
+# ---------------------------------------------------------------------------
+# `_sp`（本体+附属物）合成帧 vs 纯本体帧：编译时识别、提示、按状态取用
+# 2026-10-06 凉月基础帧事故：作者的 143 个 clip 全部引用 `_sp` 合成帧，
+# 基础状态（待机/移动/胜利/倒下/灵魂/复活）因此带上了召唤物；换成纯本体帧时
+# 又必须按"纯本体在合成帧内的偏移 (dx,dy)"做 clip.x += dx 的补偿（1.4.143
+# 事故把符号做反，整体偏移 (-24,-24)）。
+# ---------------------------------------------------------------------------
+
+SUMMON_STATE_SLOTS = frozenset({"skill_ready", "special_land", "special_pose"})
+
+
+def companion_suffix(name):
+    from studio_core import COMPANION_SUFFIXES
+    stem = str(name or "").rsplit(".", 1)[0]
+    for suffix in COMPANION_SUFFIXES:
+        if stem.casefold().endswith(suffix):
+            return stem[: len(stem) - len(suffix)], suffix
+    return None
+
+
+def _asset_by_name(p, name):
+    target = str(name).casefold()
+    return next((aid for aid, asset in p["assets"].items()
+                 if str(asset.get("name", "")).casefold() == target), None)
+
+
+def detect_frame_offset(plain, composite, max_candidates=65536):
+    """纯本体帧在合成帧内的唯一精确偏移；返回 (offset, matches)。
+
+    matches=0 表示不是"同帧纯本体"（不强行替换）；matches>1 表示不唯一
+    （例如纯本体全透明），调用方对基础状态按 fail-closed 处理。
+    """
+    if plain.width > composite.width or plain.height > composite.height:
+        return None, 0
+    candidates = (composite.width - plain.width + 1) * (composite.height - plain.height + 1)
+    if candidates <= 0 or candidates > max_candidates:
+        return None, -1
+    matches = []
+    for dy in range(composite.height - plain.height + 1):
+        for dx in range(composite.width - plain.width + 1):
+            window = composite.crop((dx, dy, dx + plain.width, dy + plain.height))
+            # 注意：RGBA 的 getbbox() 只看 alpha，两图 alpha 相同时会误判相等；
+            # getextrema 逐通道返回 (lo,hi)，全 0 才是真正逐像素相等。
+            extrema = ImageChops.difference(window, plain).getextrema()
+            if all(low == 0 and high == 0 for low, high in extrema):
+                matches.append((dx, dy))
+                if len(matches) > 1:
+                    return None, len(matches)
+    return (matches[0] if matches else None), len(matches)
+
+
+def plan_pixel_frames(store, p, animations, variant):
+    """逐 clip 决定帧来源：基础状态用纯本体、技能/特殊状态保留合成帧。
+
+    返回 ``swaps``（(anim_id, clip_index) -> (asset_id, dx, dy)）与报告。
+    只有"存在同帧纯本体/合成帧对照"的素材才参与自动选择；无法证明偏移或
+    带非位移变换（翻转/旋转/缩放/透明度）时对基础状态失败关闭。
+    """
+    swaps = {}
+    report = {"variant": variant, "slots": [], "kept": [], "swaps": [], "issues": []}
+    cache = {}
+    for anim in animations:
+        if anim.get("variant", "normal") != variant or not anim.get("clips"):
+            continue
+        slot = anim.get("slot", "")
+        keep_summon = slot in SUMMON_STATE_SLOTS
+        row = {"slot": slot, "name": anim.get("name"), "clips": len(anim["clips"]),
+               "keep_summon": keep_summon, "swapped": 0, "problems": []}
+        for index, clip in enumerate(anim["clips"]):
+            aid = clip.get("asset")
+            asset = p["assets"].get(aid) or {}
+            name = asset.get("name", "")
+            pair = companion_suffix(name)
+            counterpart = None
+            if pair is not None:
+                stem, _suffix = pair
+                counterpart = _asset_by_name(p, stem + ".png")
+            else:
+                stem = str(name).rsplit(".", 1)[0]
+                counterpart = _asset_by_name(p, stem + "_sp.png")
+            if counterpart is None:
+                continue
+            current_composite = pair is not None
+            want_composite = keep_summon
+            if current_composite == want_composite:
+                if current_composite:
+                    row["keep_summon"] = True
+                    report["kept"].append({"slot": slot, "clip": index})
+                continue
+            transform = (clip.get("flip"), float(clip.get("rotation", 0)),
+                         float(clip.get("scale", 1)), float(clip.get("opacity", 1)))
+            if any((transform[0], transform[1] != 0, transform[2] != 1, transform[3] != 1)):
+                message = (f"{slot} 第 {index + 1} 段带翻转/旋转/缩放/透明度，"
+                           "无法保证合成帧与纯本体帧的偏移补偿")
+                if not keep_summon:
+                    row["problems"].append(message)
+                else:
+                    report["issues"].append(message)
+                continue
+            key = (current_composite, counterpart, aid)
+            if key not in cache:
+                plain_aid = counterpart if current_composite else aid
+                composite_aid = aid if current_composite else counterpart
+                plain = image_from(store.asset_bytes(p, plain_aid))
+                composite = image_from(store.asset_bytes(p, composite_aid))
+                offset, matches = detect_frame_offset(plain, composite)
+                cache[key] = (offset, matches)
+            offset, matches = cache[key]
+            if matches != 1 or offset is None:
+                message = (f"{slot} 第 {index + 1} 段：无法证明纯本体帧在合成帧内的"
+                           f"唯一偏移（匹配 {matches} 处），不能自动切换素材")
+                if not keep_summon:
+                    row["problems"].append(message)
+                else:
+                    report["issues"].append(message)
+                continue
+            dx, dy = offset
+            if keep_summon:
+                swaps[(anim["id"], index)] = (counterpart, -dx, -dy)
+            else:
+                swaps[(anim["id"], index)] = (counterpart, dx, dy)
+            row["swapped"] += 1
+            report["swaps"].append({
+                "slot": slot, "clip": index,
+                "from": asset.get("name"), "to": p["assets"][counterpart].get("name"),
+                "offset": [dx, dy] if not keep_summon else [-dx, -dy],
+            })
+        report["slots"].append(row)
+    problems = [problem for row in report["slots"] for problem in row["problems"]]
+    report["problems"] = problems
+    if problems:
+        raise StudioError(
+            "基础状态引用了合成帧，但无法按官方语义替换为纯本体帧：\n- "
+            + "\n- ".join(problems)
+        )
+    return swaps, report
+
+
+def compile_pixelart_with_report(store, p, animations, variant, code, frame_plan=None):
     animations = [a for a in animations if a.get("variant", "normal") == variant and a.get("clips")]
     if not animations:
-        return {}, []
+        return {}, [], {"variant": variant, "slots": [], "swaps": [], "kept": [],
+                        "issues": [], "problems": []}
+    if frame_plan is None:
+        frame_plan, plan_report = plan_pixel_frames(store, p, animations, variant)
+    else:
+        plan_report = {"variant": variant, "slots": [], "swaps": [], "kept": [],
+                       "issues": [], "problems": []}
     names = [a["slot"] for a in animations]
     if len(set(names)) != len(names) or any(not re.fullmatch(r"[A-Za-z0-9_]+", n) for n in names):
         raise StudioError("同组动作槽位不能重复，槽位只能使用英文、数字和下划线")
@@ -64,8 +248,17 @@ def compile_pixelart(store, p, animations, variant, code):
         if anim.get("fps", 60) != 60:
             raise StudioError("游戏动画编译使用 60 帧时间基准，请调整停留帧数")
         begin = tick
-        for clip in anim["clips"]:
-            cell, x, y = transformed_cell(store, p, clip)
+        for index, clip in enumerate(anim["clips"]):
+            decision = frame_plan.get((anim["id"], index))
+            if decision is not None:
+                asset_id, dx, dy = decision
+                cell, x, y = transformed_cell(
+                    store, p, dict(clip, x=clip.get("x", 0) + dx,
+                                   y=clip.get("y", 0) + dy),
+                    aid=asset_id,
+                )
+            else:
+                cell, x, y = transformed_cell(store, p, clip)
             if cell.width > PIXEL_EDGE or cell.height > PIXEL_EDGE or abs(x) > 1024 or abs(y) > 1024:
                 raise StudioError("像素画稿尺寸或位置过大")
             digest = hashlib.sha256(png_bytes(cell)).hexdigest()
@@ -95,10 +288,24 @@ def compile_pixelart(store, p, animations, variant, code):
     if len(scales) != 1:
         raise StudioError("同组动作的游戏显示倍率需一致")
     frame = {"name": f"{root}/{stem}", "x": -128, "y": -128, "scale": scales.pop(), "smoothing": False}
+    # Official character pixelart timelines carry the key set
+    # sequences/sounds/points/circles. The client coerces a missing `sounds`
+    # member to null and AssetPathCollectionBuilder/loadDynamicSoundEffect
+    # dereferences sounds.length (TypeError #1009), so `sounds` must always be
+    # written; circles/points are safe as explicit empty anchor arrays because
+    # PlayheadTimeline treats null and empty identically for them.
+    # 官方模板 deepcopy + 键集断言：sequences/sounds/points/circles 四键永不缺
+    # （客户端 loadDynamicSoundEffect 无判空，缺 sounds 抛 TypeError #1009）。
+    timeline = pixelart_timeline(sequences)
     files = {f"{root}/{sheet_stem}.png": FAKE_PNG + png_bytes(sheet)[8:],
              f"{root}/{sheet_stem}.atlas.amf3.deflate": amf_bytes(atlas),
              f"{root}/{stem}.frame.amf3.deflate": amf_bytes(frame),
-             f"{root}/{stem}.timeline.amf3.deflate": amf_bytes({"sequences": sequences})}
+             f"{root}/{stem}.timeline.amf3.deflate": amf_bytes(timeline)}
+    for record in atlas:
+        if set(record) != set(PIXELART_ATLAS_RECORD_TEMPLATE):
+            raise StudioError("图集记录键集与官方模板不一致（结构契约）")
+    if set(frame) != set(PIXELART_FRAME_TEMPLATE):
+        raise StudioError("frame 键集与官方模板不一致（结构契约）")
     # Read the exact encoded arrays and stored sheet, then prove original cells remain equal.
     read_atlas = AMF3Reader(zlib.decompress(files[f"{root}/{sheet_stem}.atlas.amf3.deflate"], -15)).read_value()
     read_sheet = image_from(files[f"{root}/{sheet_stem}.png"])
@@ -106,6 +313,13 @@ def compile_pixelart(store, p, animations, variant, code):
         extracted = read_sheet.crop((record["x"], record["y"], record["x"] + record["w"], record["y"] + record["h"]))
         if hashlib.sha256(png_bytes(extracted)).hexdigest() not in rects:
             raise StudioError("编译回读的画稿不一致")
+    return files, sequences, plan_report
+
+
+def compile_pixelart(store, p, animations, variant, code, frame_plan=None):
+    files, sequences, _report = compile_pixelart_with_report(
+        store, p, animations, variant, code, frame_plan=frame_plan,
+    )
     return files, sequences
 
 
@@ -141,7 +355,9 @@ def compile_effect(store, p, effect, code):
         sheet.paste(cell, (px, py))
     parts = {"i": images, "g": [{"t": tick, "s": segments}], "m": [], "a": [1] * len(images), "o": [], "t": matrices, "c": [], "s": effect.get("frameScale", 1)}
     sounds, audio_files, audio_issues = effect_audio(store, p, effect, code)
-    timeline = {"sequences": [{"begin": 1, "end": tick, "name": "neutral", "kind": effect["kind"]}], "sounds": sounds, "points": [], "circles": [], "rectangles": [], "matrices": []}
+    timeline = effect_timeline(
+        [{"begin": 1, "end": tick, "name": "neutral", "kind": effect["kind"]}], sounds,
+    )
     return {**audio_files, f"{root}/{effect['id']}.png": FAKE_PNG + png_bytes(sheet)[8:], f"{root}/{effect['id']}.atlas.amf3.deflate": amf_bytes(atlas), f"{root}/effect.parts.amf3.deflate": amf_bytes(parts), f"{root}/effect.timeline.amf3.deflate": amf_bytes(timeline)}, "；".join(audio_issues) or None
 
 
@@ -169,6 +385,9 @@ def compile_native_effect(store, p, effect, code):
         sounds, audio_files, audio_issues = effect_audio(store, p, effect, code, sequence["begin"])
         timeline["sounds"] = sounds
         timeline["sequences"] = [sequence]
+    missing = sorted(set(EFFECT_TIMELINE_TEMPLATE) - set(timeline))
+    if missing:
+        raise StudioError(f"原生特效 timeline 缺官方键 {missing}（结构契约）")
     records = json.loads(read(f"effect/{folder}/{folder}.atlas.json"))
     original_sheet = image_from(read(f"effect/{folder}/{folder}.png"))
     root = f"battle/effect/skill_unique/{code}/{effect['id']}"
@@ -223,7 +442,11 @@ def compiled_preview(store, pid, group, animation_id):
         raise StudioError("找不到要预览的动作")
     code = p["identity"].get("code", "new_character")
     if group == "animations":
-        output, _ = compile_pixelart(store, p, p[group], anim.get("variant", "normal"), code)
+        variant = anim.get("variant", "normal")
+        plan, _plan_report = plan_pixel_frames(store, p, p[group], variant)
+        output, _ = compile_pixelart(
+            store, p, p[group], variant, code, frame_plan=plan,
+        )
     else:
         output, issue = compile_effect(store, p, anim, code)
         if issue and not output:
@@ -347,10 +570,31 @@ def compile_project(store, pid):
         raise StudioError("请在角色资料中填写英文资源代号，以小写字母开头，仅含小写字母、数字和下划线")
     files, receipts, pending = {}, [], []
     for variant in ("normal", "special"):
-        output, sequences = compile_pixelart(store, p, p["animations"], variant, code)
+        plan, plan_report = plan_pixel_frames(store, p, p["animations"], variant)
+        output, sequences, _ = compile_pixelart_with_report(
+            store, p, p["animations"], variant, code, frame_plan=plan,
+        )
         files.update({"compiled/common/" + k: v for k, v in output.items()})
         if output:
             receipts.append({"kind": variant, "sequences": sequences, "readback": True})
+            receipts.append({
+                "kind": variant + "-frames",
+                "clips": sum(row["clips"] for row in plan_report["slots"]),
+                "swapped": len(plan_report["swaps"]),
+                "kept_composite": len(plan_report["kept"]),
+                "slots": plan_report["slots"],
+                "swaps": plan_report["swaps"],
+                "issues": plan_report["issues"],
+                "readback": True,
+            })
+            pending.extend(plan_report["issues"])
+    from portrait_editor import contract_report as ui_contract_report
+    ui_contract = ui_contract_report(store, p)
+    if ui_contract["problems"]:
+        raise StudioError("界面契约未通过：\n- " + "\n- ".join(ui_contract["problems"]))
+    receipts.append({"kind": "ui-contract", "slots": ui_contract["slots"],
+                     "warnings": ui_contract["warnings"], "readback": True})
+    pending.extend(ui_contract["warnings"])
     from portrait_editor import selection, render as render_ui, ui_name
     for form in ("base", "evolved"):
         emitted = []
@@ -401,5 +645,6 @@ def compile_project(store, pid):
     files["声音用途与台词.json"] = json_bytes({"voices": p.get("voices", []), "sounds": p.get("sounds", []), "note": "用途与台词用于交接；主界面语音表、角色喊声槽位与剧情字幕仍需接入绑定。"})
     files["制作需求.json"] = json_bytes({"identity": p["identity"], "skill": p["skill"], "scene": p["scene"], "notes": p["notes"], "template": p["template"]})
     files["MOD角色接入契约.json"] = json_bytes(export_contract(store, p))
+    files["declarations.json"] = json_bytes(declaration_payload(p))
     files["接入说明.txt"] = ("离线美术编译产物，不能直接覆盖游戏。\n已回读检查 PNG、AMF3 与像素图块。\n\n待接入项：\n" + "\n".join(pending)).encode("utf-8")
     return make_zip(files), report

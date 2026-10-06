@@ -2,6 +2,10 @@
 
 An official PNG is already composed artwork. It must never be resized or
 masked merely because the user selects a different UI purpose.
+
+形状遮罩（2026-10-06 凉月插画复盘）：官方 8 类资源把几何形状烘焙在 alpha 里
+（技能指引=冰锥/水滴、技能连锁=六边形、队员状态=圆、圆角与缩略图类=圆角矩形），
+战斗侧没有运行时裁剪，所以工坊必须能按声明生成并校验这些形状。
 """
 from __future__ import annotations
 
@@ -10,6 +14,151 @@ import math
 from pathlib import Path
 from PIL import Image, ImageChops, ImageDraw
 from studio_core import UI_SLOTS, StudioError, image_from, png_bytes, number
+
+# 8 类形状的几何参数来自官方样本测量（2026-10-06 凉月插画裁剪报告 §3.6.2）。
+SHAPE_MASKS = {
+    "round_95": {"kind": "rounded", "radius": 14},
+    "round_136": {"kind": "rounded", "radius": 21},
+    "level_up": {"kind": "rounded", "radius": 24},
+    "party_main": {"kind": "rounded", "radius": 24},
+    "party_unison": {"kind": "rounded", "radius": 14},
+    "member_status": {"kind": "circle"},
+    "control_board": {"kind": "cone"},
+    "chain": {"kind": "hexagon"},
+}
+SLOT_SHAPES = {
+    "square_round_95_95": "round_95",
+    "square_round_136_136": "round_136",
+    "thumb_level_up": "level_up",
+    "thumb_party_main": "party_main",
+    "thumb_party_unison": "party_unison",
+    "battle_member_status": "member_status",
+    "battle_control_board": "control_board",
+    "cutin_skill_chain": "chain",
+}
+# 官方填充率（规范蒙版 mask-canonical 实测），用于生成校验的容差参照。
+OFFICIAL_FILL = {
+    "round_95": 0.9823, "round_136": 0.9801, "level_up": 0.9940,
+    "party_main": 0.9931, "party_unison": 0.9938, "member_status": 0.7824,
+    "control_board": 0.6726, "chain": 0.7501,
+}
+MASK_SCALE = 8
+
+
+def _cone_half(row: int, height: int, width: int, scale: int = 1) -> float:
+    """冰锥/水滴：顶部圆头、25% 处最宽、底部收窄。
+
+    行宽剖面按官方规范蒙版（battle_control_board.png，104×268）实测：
+    0%/2%/10%/25%/50%/75%/90%/98% 高度处行宽 = 13.5%/44.2%/86.5%/96.2%/
+    73.1%/51.0%/37.5%/24.0%（合成 vs 官方 IoU 0.98）。
+    """
+    half = width / 2
+    t = (row + 0.5) / max(1, height * scale)
+    points = ((0.0, 0.135), (0.02, 0.442), (0.05, 0.673), (0.10, 0.865),
+              (0.25, 0.962), (0.50, 0.731), (0.75, 0.510), (0.90, 0.375),
+              (0.95, 0.327), (0.98, 0.240), (1.0, 0.077))
+    value = points[-1][1]
+    for (t0, v0), (t1, v1) in zip(points, points[1:]):
+        if t <= t0:
+            value = v0
+            break
+        if t0 <= t <= t1:
+            value = v0 + (v1 - v0) * (t - t0) / (t1 - t0)
+            break
+    return max(0.0, value * half)
+
+
+def _hexagon_half(row: int, height: int, width: int, scale: int = 1) -> float:
+    half = width / 2
+    tip = max(1.0, height * 0.25)
+    slope = half / tip
+    y = (row + 0.5) / scale
+    return max(0.0, min(half, slope * y, slope * (height - y)))
+
+
+def shape_mask_image(key: str, size) -> Image.Image:
+    """按官方几何合成 8 类形状遮罩（L 通道，8× 超采样抗锯齿）。"""
+    if key not in SHAPE_MASKS:
+        raise StudioError("未知的界面形状遮罩")
+    width, height = size
+    if width <= 0 or height <= 0:
+        raise StudioError("遮罩尺寸无效")
+    spec = SHAPE_MASKS[key]
+    scale = MASK_SCALE
+    big = Image.new("L", (width * scale, height * scale), 0)
+    draw = ImageDraw.Draw(big)
+    kind = spec["kind"]
+    if kind == "rounded":
+        radius = max(1, int(spec["radius"] * scale))
+        draw.rounded_rectangle((0, 0, width * scale - 1, height * scale - 1),
+                               radius=radius, fill=255)
+    elif kind == "circle":
+        draw.ellipse((0, 0, width * scale - 1, height * scale - 1), fill=255)
+    else:
+        for row in range(height * scale):
+            if kind == "cone":
+                half = _cone_half(row, height, width, scale)
+            else:
+                half = _hexagon_half(row, height, width, scale)
+            if half <= 0:
+                continue
+            left = max(0, int(round((width / 2 - half) * scale)))
+            right = min(width * scale - 1, int(round((width / 2 + half) * scale)))
+            draw.rectangle((left, row, right, row), fill=255)
+    return big.resize((width, height), Image.Resampling.LANCZOS)
+
+
+def apply_shape_mask(image: Image.Image, key: str) -> dict:
+    """把形状遮罩乘进 alpha，并回执遮罩外 alpha 检查所需的统计。"""
+    mask = shape_mask_image(key, image.size)
+    rgba = image.convert("RGBA")
+    before = rgba.getchannel("A")
+    rgba.putalpha(ImageChops.multiply(before, mask))
+    outside = ImageChops.subtract(before, mask)
+    outside_bbox = outside.getbbox()
+    covered = sum(1 for value in mask.getdata() if value > 127) / (mask.width * mask.height)
+    return {
+        "image": rgba,
+        "mask": mask,
+        "coverage": covered,
+        "official_fill": OFFICIAL_FILL.get(key),
+        "outside_alpha_bbox": outside_bbox,
+        "outside_alpha_max": (outside.getextrema()[1] if outside_bbox else 0),
+    }
+
+
+def validate_shape_output(key: str, image: Image.Image) -> list[str]:
+    """形状生成校验：遮罩外 alpha=0、形状填充率接近官方、行内无孔洞。"""
+    problems: list[str] = []
+    mask = shape_mask_image(key, image.size)
+    alpha = image.convert("RGBA").getchannel("A")
+    outside = ImageChops.subtract(alpha, mask)
+    if outside.getbbox():
+        problems.append(f"{key}: 遮罩外仍有不透明像素（alpha 越界）")
+    pixels = mask.load()
+    for y in range(mask.height):
+        occupied = [x for x in range(mask.width) if pixels[x, y] > 32]
+        if not occupied:
+            continue
+        run = 0
+        for x in range(occupied[0], occupied[-1] + 1):
+            if pixels[x, y] <= 32:
+                run += 1
+            else:
+                if run >= 2:
+                    problems.append(f"{key}: 遮罩第 {y} 行有 {run} 像素孔洞")
+                    break
+                run = 0
+        else:
+            continue
+        break
+    coverage = sum(1 for value in mask.getdata() if value > 127) / (mask.width * mask.height)
+    official = OFFICIAL_FILL.get(key)
+    if official is not None and abs(coverage - official) > 0.03:
+        problems.append(
+            f"{key}: 遮罩填充率 {coverage:.4f} 与官方 {official:.4f} 偏差超过 0.03"
+        )
+    return problems
 
 
 def ui_name(form, slot):
@@ -51,8 +200,14 @@ def hydrate(store, p):
 def selection(p, form, slot):
     ui_name(form, slot)
     key = form + ":" + slot
+    declared = (p.get("uiDeclarations") or {}).get(key)
     if key in p.get("uiImages", {}):
-        return dict(p["uiImages"][key])
+        spec = dict(p["uiImages"][key])
+        if isinstance(declared, dict):
+            spec.setdefault("mask", declared.get("mask"))
+            spec["autoCrop"] = declared.get("autoCrop", True)
+            spec["declarationNote"] = declared.get("note", "")
+        return spec
     # Explicit old crop edits remain intact. Unedited legacy templates now
     # correctly select their official UI image, including trimmed full shots.
     if key in p.get("crops", {}) and p["portraits"].get(form):
@@ -67,13 +222,48 @@ def selection(p, form, slot):
         if not math.isfinite(scale) or scale <= 0:
             raise StudioError("旧版裁剪参数无效")
         rw, rh = w / scale, h / scale
-        return {"mode": "crop", "asset": aid, "width": w, "height": h,
+        spec = {"mode": "crop", "asset": aid, "width": w, "height": h,
                 "rect": {"x": c.get("x", .5) * a["width"] - rw / 2,
                          "y": c.get("y", .5 if slot == "full_shot" else .25) * a["height"] - rh / 2,
                          "width": rw, "height": rh},
                 "mask": "rounded" if "round" in slot else "none", "legacy": True}
+        if isinstance(declared, dict):
+            spec["mask"] = declared.get("mask") or spec["mask"]
+            spec["declarationNote"] = declared.get("note", "")
+        return spec
     aid = p["portraits"].get(form) if slot == "full_shot" else p.get("uiSources", {}).get(key)
-    return {"mode": "image", "asset": aid}
+    spec = {"mode": "image", "asset": aid}
+    if isinstance(declared, dict):
+        spec["mask"] = declared.get("mask")
+        spec["autoCrop"] = declared.get("autoCrop", True)
+        spec["declarationNote"] = declared.get("note", "")
+    return spec
+
+
+def resolve_mask(slot: str, spec: dict) -> str:
+    mask = spec.get("mask")
+    if mask == "auto":
+        return SLOT_SHAPES.get(slot, "none")
+    if mask in (None, ""):
+        return "none"
+    return mask
+
+
+def _ratio_problem(spec) -> str | None:
+    rect = spec.get("rect") or {}
+    width, height = spec.get("width"), spec.get("height")
+    try:
+        rect_ratio = float(rect["width"]) / float(rect["height"])
+        target_ratio = float(width) / float(height)
+    except (KeyError, TypeError, ValueError, ZeroDivisionError):
+        return None
+    if rect_ratio <= 0 or target_ratio <= 0:
+        return None
+    drift = abs(rect_ratio / target_ratio - 1.0)
+    if drift > 0.003:
+        return (f"裁剪区域长宽比与目标画布偏差 {drift * 100:.2f}%（上限 0.3%），"
+                "会产生透明留白或拉伸；请收窄裁剪框或改用专用图片")
+    return None
 
 
 def validate_selection(p, spec):
@@ -94,8 +284,17 @@ def validate_selection(p, spec):
             number(rect.get(k), -32768, 32768, "裁剪位置")
         for k in ("width", "height"):
             number(rect.get(k), .1, 65536, "裁剪范围")
-        if spec.get("mask", "none") not in ("none", "rounded"):
+        if spec.get("mask", "none") not in ("none", "rounded") and spec.get("mask") not in SHAPE_MASKS:
             raise StudioError("裁剪蒙版无效")
+        if spec.get("autoCrop") is False:
+            raise StudioError("该用途声明为“禁止从母版自动裁切”，请导入专用图片")
+        if not spec.get("legacy"):
+            problem = _ratio_problem(spec)
+            if problem:
+                raise StudioError(problem)
+    mask = spec.get("mask")
+    if mask not in (None, "", "auto", "none", "rounded") and mask not in SHAPE_MASKS:
+        raise StudioError("界面遮罩无效")
 
 
 def validate_ui(p):
@@ -116,6 +315,17 @@ def render(store, p, form, slot, spec=None):
     validate_selection(p, spec)
     raw = store.asset_bytes(p, spec["asset"])
     if spec["mode"] == "image":
+        mask_key = resolve_mask(slot, spec)
+        if mask_key in SHAPE_MASKS:
+            return png_bytes(apply_shape_mask(image_from(raw), mask_key)["image"])
+        if mask_key == "rounded":
+            image = image_from(raw)
+            mask = Image.new("L", image.size)
+            ImageDraw.Draw(mask).rounded_rectangle(
+                (0, 0, image.width - 1, image.height - 1),
+                radius=round(min(image.size) * .18), fill=255)
+            image.putalpha(ImageChops.multiply(image.getchannel("A"), mask))
+            return png_bytes(image)
         return raw
     source = image_from(raw)
     rect = spec["rect"]
@@ -127,8 +337,50 @@ def render(store, p, form, slot, spec=None):
         result = source.transform((w, h), Image.Transform.AFFINE,
                                   (rect["width"] / w, 0, rect["x"], 0, rect["height"] / h, rect["y"]),
                                   resample=Image.Resampling.BICUBIC)
-    if spec.get("mask") == "rounded":
+    mask_key = resolve_mask(slot, spec)
+    explicit = spec.get("mask")
+    if mask_key in SHAPE_MASKS:
+        result = apply_shape_mask(result, mask_key)["image"]
+    elif mask_key == "rounded":
         mask = Image.new("L", (w, h))
         ImageDraw.Draw(mask).rounded_rectangle((0, 0, w - 1, h - 1), radius=round(min(w, h) * .18), fill=255)
         result.putalpha(ImageChops.multiply(result.getchannel("A"), mask))
+    elif explicit not in (None, "", "auto", "none", "rounded"):
+        raise StudioError("界面遮罩无效")
     return png_bytes(result)
+
+
+def contract_report(store, p) -> dict:
+    """UI 契约回执：逐槽位形状声明、裁剪比例、遮罩生成校验。"""
+    report: dict = {"slots": [], "problems": [], "warnings": []}
+    from studio_core import KEY_UI_SLOTS
+    for form in ("base", "evolved"):
+        for slot in UI_SLOTS:
+            spec = selection(p, form, slot)
+            if not spec.get("asset"):
+                continue
+            key = f"{form}:{slot}"
+            row = {"key": key, "mode": spec.get("mode"),
+                   "mask": resolve_mask(slot, spec),
+                   "declared": key in (p.get("uiDeclarations") or {})}
+            if spec.get("mode") == "crop":
+                problem = _ratio_problem(spec)
+                if problem:
+                    if spec.get("legacy"):
+                        report["warnings"].append(f"{key}:（旧版裁剪）{problem}")
+                    else:
+                        report["problems"].append(f"{key}: {problem}")
+            shape = resolve_mask(slot, spec)
+            if shape in SHAPE_MASKS:
+                raw = render(store, p, form, slot, spec)
+                image = image_from(raw)
+                row["shape_coverage"] = sum(
+                    1 for value in image.getchannel("A").getdata() if value > 127
+                ) / (image.width * image.height)
+                for message in validate_shape_output(shape, image):
+                    report["problems"].append(f"{key}: {message}")
+            if slot in KEY_UI_SLOTS and key not in (p.get("uiDeclarations") or {}):
+                report["warnings"].append(
+                    f"{key}: 五类重点用途未声明取景/遮罩意图（检查页有对应提示）")
+            report["slots"].append(row)
+    return report

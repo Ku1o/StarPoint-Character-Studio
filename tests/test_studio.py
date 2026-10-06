@@ -144,6 +144,15 @@ class StudioTests(unittest.TestCase):
         self.anim["clips"].append(dict(self.anim["clips"][0], asset=second, hold=4))
         out, seq = compile_pixelart(self.store, self.p, [self.anim], "normal", "test_character")
         self.assertEqual(seq, [{"name": "neutral", "kind": "loop", "begin": 1, "end": 13}])
+        # F1009 regression: the client's loadDynamicSoundEffect dereferences
+        # timeline.sounds without a null guard, so a compiled pixelart timeline
+        # must always carry the official key set with an explicit sounds array.
+        timeline = AMF3Reader(zlib.decompress(next(v for k, v in out.items() if k.endswith(".timeline.amf3.deflate")), -15)).read_value()
+        self.assertEqual(sorted(timeline.keys()), ["circles", "points", "sequences", "sounds"])
+        self.assertEqual(timeline["sounds"], [])
+        self.assertEqual(timeline["circles"], [])
+        self.assertEqual(timeline["points"], [])
+        self.assertEqual(timeline["sequences"], seq)
         atlas = AMF3Reader(zlib.decompress(next(v for k, v in out.items() if k.endswith(".atlas.amf3.deflate")), -15)).read_value()
         # Independent transcription of accepted client FrameAnimationSource.
         image_frames = []
