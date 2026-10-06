@@ -32,6 +32,17 @@ PNG = b"\x89PNG\r\n\x1a\n"
 FAKE_PNG = b"\x89png\r\n\x1a\n"
 SAFE = re.compile(r"[a-zA-Z0-9_-]+\Z")
 LABELS = {"neutral": "待机", "walk_front": "向前移动", "walk_back": "向后移动", "skill_ready": "技能准备", "kachidoki": "胜利", "into_coffin": "倒下", "ghost_raise": "灵魂出现", "ghost_neutral": "灵魂待机", "revive": "复活", "special_land": "获取·登场", "special_pose": "获取·定格", "attack_initial": "攻击·起手", "attack_charge": "攻击·蓄力", "attack_finish": "攻击·收招"}
+# 附属物/合成帧命名后缀（2026-10-06 凉月基础帧事故：作者同帧同时提供
+# 纯本体 <名>.png 与"本体+召唤物" <名>_sp.png，编译误把合成帧当基础帧）。
+COMPANION_SUFFIXES = ("_sp", "_summon", "_fx", "_eff", "_glow")
+BASE_STATE_SLOTS = ("neutral", "walk_front", "walk_back", "kachidoki",
+                    "into_coffin", "ghost_raise", "ghost_neutral", "revive")
+COMPANION_STATE_SLOTS = ("skill_ready", "special_land", "special_pose")
+KEY_UI_SLOTS = ("square", "thumb_party_main", "skill_cutin",
+                "battle_control_board", "cutin_skill_chain")
+UI_MASK_VALUES = ("auto", "none", "rounded", "cone", "hexagon", "circle")
+EFFECT_ORIGINS = ("reuse", "reskin", "original")
+VOICE_ENTRIES = ("ally", "battle", "home", "login", "words")
 UI_SLOTS = {
     "full_shot": ("立绘", 1440, 1920), "square_132_132": ("头像", 132, 132),
     "square_round_95_95": ("圆角头像", 95, 95), "square_round_136_136": ("大圆角头像", 136, 136),
@@ -89,6 +100,184 @@ def image_from(raw):
 
 def json_bytes(value):
     return json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False).encode("utf-8")
+
+
+def asset_variant(name):
+    """按文件名后缀推断素材身份：plain(纯本体) / composite(合成帧)。"""
+    stem = str(name or "").rsplit(".", 1)[0].casefold()
+    return "composite" if any(stem.endswith(suffix) for suffix in COMPANION_SUFFIXES) else "plain"
+
+
+def clip_variant(p, aid):
+    asset = p["assets"].get(aid) or {}
+    variant = asset.get("variant")
+    if variant in ("plain", "composite"):
+        return variant
+    return asset_variant(asset.get("name", ""))
+
+
+def animation_variant(p, anim):
+    variants = {clip_variant(p, clip.get("asset")) for clip in anim.get("clips") or []}
+    if "composite" in variants and "plain" in variants:
+        return "mixed"
+    if "composite" in variants:
+        return "composite"
+    return "plain" if variants else ""
+
+
+def normalize_declarations(p):
+    """补齐可选声明字段（缺省 = 未标注），不改旧文件其余内容。"""
+    if not isinstance(p.get("authorNotes"), str):
+        p["authorNotes"] = ""
+    for group in ("animations", "effects"):
+        for anim in p.get(group, []):
+            if not isinstance(anim, dict):
+                continue
+            if not isinstance(anim.get("purpose"), str):
+                anim["purpose"] = anim.get("purpose") or ""
+            if not isinstance(anim.get("includesCompanion"), bool):
+                anim["includesCompanion"] = "" if anim.get("includesCompanion") in (None, "") else bool(anim.get("includesCompanion"))
+            if not isinstance(anim.get("companionNote"), str):
+                anim["companionNote"] = ""
+            if not isinstance(anim.get("origin"), str):
+                anim["origin"] = anim.get("origin") or ""
+            if not isinstance(anim.get("originNote"), str):
+                anim["originNote"] = anim.get("originNote") or ""
+    if not isinstance(p.get("uiDeclarations"), dict):
+        p["uiDeclarations"] = {}
+    if not isinstance(p.get("voiceDeclarations"), list):
+        p["voiceDeclarations"] = []
+    return p
+
+
+def validate_declarations(p):
+    for group in ("animations", "effects"):
+        for anim in p.get(group, []):
+            companion = anim.get("includesCompanion")
+            if companion is not None and companion not in ("", True, False):
+                raise StudioError("动作的“是否包含召唤物”取值无效")
+            if anim.get("origin") and anim["origin"] not in ("", *EFFECT_ORIGINS):
+                raise StudioError("特效来源声明无效（复用/重皮/原创）")
+            for field in ("companionNote", "originNote", "purpose"):
+                if len(str(anim.get(field) or "")) > 500:
+                    raise StudioError("动作说明过长")
+    for key, spec in (p.get("uiDeclarations") or {}).items():
+        if ":" not in key or not isinstance(spec, dict):
+            raise StudioError("UI 用途声明无效")
+        if spec.get("mask") not in (None, "", *UI_MASK_VALUES):
+            raise StudioError("UI 遮罩声明无效")
+    for item in p.get("voiceDeclarations") or []:
+        if not isinstance(item, dict) or len(item.get("text") or "") > 2000:
+            raise StudioError("语音声明无效")
+        if item.get("entry") not in (None, "", *VOICE_ENTRIES):
+            raise StudioError("语音入口声明无效（ally/battle/home/login/words）")
+    return p
+
+
+def declaration_payload(p):
+    """导出/编译用的“来源与声明”载荷（wf_character_flow 的 preflight 分组同源）。"""
+    normalize_declarations(p)
+    animations = []
+    for anim in p.get("animations", []):
+        animations.append({
+            "id": anim.get("id"),
+            "name": anim.get("name"),
+            "slot": anim.get("slot", ""),
+            "variant": animation_variant(p, anim),
+            "includesCompanion": anim.get("includesCompanion", ""),
+            "companionNote": anim.get("companionNote", ""),
+            "purpose": anim.get("purpose", ""),
+        })
+    effects = [{
+        "id": effect.get("id"),
+        "name": effect.get("name"),
+        "origin": effect.get("origin", ""),
+        "originNote": effect.get("originNote", ""),
+    } for effect in p.get("effects", [])]
+    return {
+        "schema": "starpoint-character-studio-declarations-v1",
+        "authorNotes": p.get("authorNotes", ""),
+        "animations": animations,
+        "effects": effects,
+        "uiDeclarations": copy.deepcopy(p.get("uiDeclarations") or {}),
+        "voiceDeclarations": copy.deepcopy(p.get("voiceDeclarations") or []),
+    }
+
+
+_PLAY_LABELS = {"once": "单次", "loop": "循环", "pass": "衔接下一段", "stop": "停在首帧"}
+_VARIANT_LABELS = {"plain": "纯本体", "composite": "合成帧", "mixed": "纯本体+合成帧混用", "": "未标注"}
+
+
+def author_readme(p):
+    """`.wfchar` 包内《README-稿主必读.md》：动作/语音/UI/特效/未标注项清单。"""
+    normalize_declarations(p)
+    lines = [
+        "# 稿主必读（角色工坊自动生成）",
+        "",
+        "这个包是《星点角色工坊》的可编辑创作工程，不是可直接安装的游戏补丁。",
+        "在工坊里用「打开工程 / 参考包」导入本包即可继续制作。",
+        "",
+        "## 1. 动作清单",
+        "",
+        "| 槽位 | 中文 | 画稿段数 | 总帧 | 播放 | 帧来源 | 包含召唤物 | 说明 |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+    ]
+    for anim in p.get("animations", []):
+        clips = anim.get("clips") or []
+        frames = sum(int(clip.get("hold", 0)) for clip in clips)
+        companion = {True: "是", False: "否"}.get(anim.get("includesCompanion"), "未标注")
+        note = str(anim.get("companionNote") or anim.get("purpose") or "").replace("|", "／")
+        lines.append(
+            f"| {anim.get('slot', '')} | {LABELS.get(anim.get('slot'), anim.get('name', ''))} "
+            f"| {len(clips)} | {frames} | {_PLAY_LABELS.get(anim.get('kind'), anim.get('kind', ''))} "
+            f"| {_VARIANT_LABELS.get(animation_variant(p, anim), '')} | {companion} | {note} |"
+        )
+    lines += ["", "## 2. 语音入口表", "",
+              "| 文件/素材 | 入口 | 用途 | 台词 |", "| --- | --- | --- | --- |"]
+    if p.get("voiceDeclarations"):
+        for item in p["voiceDeclarations"]:
+            lines.append(
+                f"| {item.get('file') or item.get('asset') or ''} | {item.get('entry') or '未标注'} "
+                f"| {item.get('usage') or ''} | {str(item.get('text') or '').replace('|', '／')} |"
+            )
+    else:
+        lines.append("| （未登记） | — | — | — |")
+    lines += ["", "## 3. UI 用途声明", ""]
+    if p.get("uiDeclarations"):
+        for key, spec in sorted(p["uiDeclarations"].items()):
+            lines.append(
+                f"- {key}：自动裁切={'是' if spec.get('autoCrop') else '否'}，"
+                f"遮罩={spec.get('mask') or 'auto'}，说明={spec.get('note') or '（无）'}"
+            )
+    else:
+        lines.append("- （五类重点用途尚未声明取景/遮罩意图）")
+    lines += ["", "## 4. 特效来源声明", ""]
+    if p.get("effects"):
+        for effect in p["effects"]:
+            lines.append(
+                f"- {effect.get('name') or effect.get('id')}："
+                f"{effect.get('origin') or '未标注'}"
+                f"{'（' + effect['originNote'] + '）' if effect.get('originNote') else ''}"
+            )
+    else:
+        lines.append("- （尚未建立特效）")
+    unmarked = []
+    from action_presets import ACTION_PRESETS
+    preset_slots = {item["slot"] for item in ACTION_PRESETS}
+    for anim in p.get("animations", []):
+        if animation_variant(p, anim) in ("composite", "mixed") and anim.get("includesCompanion") not in (True, False):
+            unmarked.append(f"动作『{anim.get('name') or anim.get('slot')}』未说明是否包含召唤物")
+        if anim.get("slot") not in preset_slots and not str(anim.get("purpose") or "").strip():
+            unmarked.append(f"动作『{anim.get('name') or anim.get('slot')}』缺用途说明")
+    if not p.get("voiceDeclarations") and (p.get("voices") or p.get("sounds")):
+        unmarked.append("语音缺少入口/台词登记")
+    lines += ["", "## 5. 未标注项清单", ""]
+    if unmarked:
+        lines.extend(f"- {item}" for item in unmarked)
+    else:
+        lines.append("- 无")
+    lines.append("")
+    return "\n".join(lines)
 
 
 def amf_bytes(value):
@@ -245,6 +434,10 @@ class ProjectStore:
             meta["mime"] = {".mp3": "audio/mpeg", ".wav": "audio/wav", ".ogg": "audio/ogg"}[ext]
         else:
             raise StudioError("可导入 PNG、WAV、MP3 或 OGG")
+        if category in ("pixel", "effect"):
+            # 来源标记（可手工改）：无后缀=plain，_sp 等后缀=composite。
+            meta.setdefault("variant", asset_variant(name))
+            meta.setdefault("sourceNote", "")
         digest = hashlib.sha256(raw).hexdigest()
         aid = digest[:24] + ext.replace(".", "_")
         meta.update(id=aid, file=aid + ext, sha256=digest, size=len(raw))
@@ -324,6 +517,8 @@ class ProjectStore:
             if not path.is_absolute() and ".." not in path.parts and "\\" not in rel:
                 files["reference/" + rel] = (self.directory(pid) / "reference" / Path(rel)).read_bytes()
         files["交接说明.txt"] = ("星点角色工坊可编辑工程。用“打开工程 / 参考包”导入继续制作。\n这是创作工程，不是可直接安装的游戏补丁。\n").encode("utf-8")
+        files["README-稿主必读.md"] = author_readme(p).encode("utf-8")
+        files["declarations.json"] = json_bytes(declaration_payload(p))
         files["制作交接.json"] = json_bytes(export_handoff(p))
         return make_zip(files)
 
@@ -662,12 +857,23 @@ def validate(p):
         identifier(voice["id"])
         if not p["assets"].get(voice.get("asset"), {}).get("mime", "").startswith("audio/"):
             raise StudioError("语音引用无效")
+    validate_declarations(p)
     return True
 
 
 def project_checks(p):
     issues = []
     from portrait_editor import selection
+
+    def issue(level, page, text, position="", fix="", **extra):
+        parts = [text]
+        if position:
+            parts.append("位置：" + position)
+        if fix:
+            parts.append("改法：" + fix)
+        issues.append({"level": level, "page": page, "text": "　".join(parts),
+                       "position": position, "fix": fix, **extra})
+
     for key, label in (("base", "基础立绘"), ("evolved", "进化立绘")):
         if not p["portraits"].get(key):
             issues.append({"level": "todo", "page": "portraits", "text": f"尚未提供{label}"})
@@ -697,6 +903,77 @@ def project_checks(p):
                 issues.append({"level": "warning", "page": page, "id": anim["id"], "text": anim["name"] + "：" + issue})
             if not anim.get("clips") and not anim.get("nativeFrames"):
                 issues.append({"level": "todo", "page": page, "id": anim["id"], "text": anim["name"] + "没有可播放画面"})
+    # ------------------------------------------------------------------
+    # 来源与声明（2026-10-06 凉月复盘；提案《角色工坊交互改进提案》第 3 节）
+    # ------------------------------------------------------------------
+    from action_presets import ACTION_PRESETS
+    preset_slots = {item["slot"] for item in ACTION_PRESETS}
+    for anim in p["animations"]:
+        if anim.get("native"):
+            continue
+        variant = animation_variant(p, anim)
+        slot = anim.get("slot", "")
+        companion = anim.get("includesCompanion", "")
+        if slot in BASE_STATE_SLOTS and variant in ("composite", "mixed") and companion is not True:
+            clips = sum(1 for clip in anim.get("clips", [])
+                        if clip_variant(p, clip.get("asset")) == "composite")
+            issue("warning", "animations",
+                  f"{anim.get('name') or slot} 等基础状态有 {clips} 段画稿疑似带附属物（_sp 合成帧）",
+                  position=f"像素动作 → {anim.get('name') or slot}（{slot}）",
+                  fix="若设计上确实要带，请在『是否包含召唤物』改为“是”并写明出现时机；"
+                      "否则请替换为无后缀的纯本体帧",
+                  id=anim["id"])
+        elif slot in COMPANION_STATE_SLOTS and variant in ("composite", "mixed") and companion not in (True, False):
+            issue("todo", "animations",
+                  f"『{anim.get('name') or slot}』尚未说明是否带召唤物",
+                  position=f"像素动作 → {anim.get('name') or slot}（{slot}）",
+                  fix="在该动作的『附属物说明』中二选一填写“带/不带”，否则制作方只能按默认处理",
+                  id=anim["id"])
+        if variant == "mixed" and companion not in (True, False):
+            issue("warning", "animations",
+                  f"动作『{anim.get('name') or slot}』同时导入了纯本体帧和合成帧",
+                  position=f"像素动作 → {anim.get('name') or slot}",
+                  fix="只保留一套，或明确说明两套各自的用途", id=anim["id"])
+        if slot not in preset_slots and not str(anim.get("purpose") or "").strip():
+            issue("todo", "animations",
+                  f"自定义动作『{anim.get('name') or slot}』还没有用途说明",
+                  position=f"像素动作 → {anim.get('name') or slot}",
+                  fix="填写用途、帧数、每帧停留与循环方式", id=anim["id"])
+    for effect in p["effects"]:
+        if not str(effect.get("origin") or "").strip():
+            issue("warning", "effects",
+                  f"技能特效『{effect.get('name') or effect.get('id')}』未声明来源",
+                  position=f"技能制作 → {effect.get('name') or effect.get('id')}",
+                  fix="选择：复用（某角色）/ 重皮（模板+配色）/ 完全原创（四件套）",
+                  id=effect["id"])
+    declared_voice_ids = {str(item.get("asset") or item.get("file") or "")
+                          for item in p.get("voiceDeclarations") or []}
+    missing_voice = [voice for voice in p.get("voices", [])
+                     if voice.get("asset") not in declared_voice_ids
+                     and voice.get("id") not in declared_voice_ids]
+    if missing_voice:
+        issue("todo", "voices",
+              f"有 {len(missing_voice)} 条语音没有登记入口分类或台词文本",
+              position="声音与台词 → 语音对照表",
+              fix="补 文件 / ally·battle·home / 用途 / 台词 四列")
+    if not p.get("voiceDeclarations") and (p.get("voices") or p.get("sounds")):
+        issue("info", "voices", "尚未登记语音入口对照表",
+              position="声音与台词", fix="按《稿主资源提供指南》补入口与台词登记")
+    for key in KEY_UI_SLOTS:
+        entries = [value for name, value in (p.get("uiDeclarations") or {}).items()
+                   if str(name).endswith(key)]
+        if entries:
+            continue
+        replaced = any(
+            selection(p, form, key).get("mode") == "image"
+            and selection(p, form, key).get("asset")
+            for form in ("base", "evolved")
+        )
+        if replaced:
+            issue("info", "portraits",
+                  f"『{UI_SLOTS[key][0]}』使用了单独替换图，但未声明取景/遮罩意图",
+                  position=f"立绘与界面 → {UI_SLOTS[key][0]}",
+                  fix="补充声明：是否禁止从母版自动裁切、是否需要形状遮罩")
     for warning in p.get("warnings", []):
         issues.append({"level": "warning", "page": "checks", "text": warning})
     issues.extend(production_checks(p))

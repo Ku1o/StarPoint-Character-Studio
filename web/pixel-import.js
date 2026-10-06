@@ -30,3 +30,39 @@ $('#pixel-hold').oninput=()=>{stopPreview();drawCell();updateStatus();};$('#pixe
 $('#pixel-import-confirm').onclick=()=>busy('导入并分配动作画稿',async()=>{stopPreview();if(S.p.id!==projectId)throw Error('工程已切换，请重新导入');await saveNow();const payload=[];for(const item of items)payload.push({name:item.file.name,path:item.path,data:await file64(item.file),target:groups.get(item.group).target,sheet:item.sheet});snapshot();const result=await api('/api/pixel-import',{id:projectId,revision:S.p.revision,files:payload,hold:Number($('#pixel-hold').value),mode:$('#pixel-import-mode').value,alignment:$('#pixel-alignment').value});S.p=result.project;S.dirty=false;S.generation++;S.selected=result.targets.includes(targetDefault)?targetDefault:(result.targets[0]||S.selected);S.clip=0;S.tick=0;S.zoom=1;$('#modal').close();render();toast(`已导入 ${result.frames} 张画稿到 ${result.animations} 个动作${result.inbox?'，另有 '+result.inbox+' 张存入收件箱':''}`);});
 if(initial.length)await choose(initial);
 }
+
+// 合成帧（附属物）识别（2026-10-06 凉月基础帧事故）：带 _sp/_summon/_fx/_eff/
+// _glow 后缀的文件不自动匹配槽位，避免基础状态误用合成帧；分组显示
+// “未分类（疑似合成帧）”，并在导入窗口给出三选一提示与来源汇总。
+(function(){
+  const suffixes=['_sp','_summon','_fx','_eff','_glow'];
+  function companionStem(name){const stem=String(name||'').replace(/\.png$/i,'').toLowerCase();for(const s of suffixes){if(stem.endsWith(s))return stem.slice(0,-s.length);}return null;}
+  if(typeof pixelMatch==='function'){const baseMatch=pixelMatch;pixelMatch=function(path){const leaf=String(path||'').split(/[\\/]/).pop();if(companionStem(leaf))return undefined;return baseMatch(path);};}
+  function updateCompanionNotice(){
+    const groupsRoot=$('#pixel-import-groups');if(!groupsRoot)return;
+    const names=[...groupsRoot.querySelectorAll('img')].map(img=>img.alt||'');
+    const composite=names.filter(n=>companionStem(n)).length,plain=names.length-composite;
+    let note=$('#pixel-companion-notice');
+    if(!note){const status=$('#pixel-import-status');if(!status)return;status.insertAdjacentHTML('beforebegin','<div id="pixel-companion-notice" class="notice" hidden></div>');note=$('#pixel-companion-notice');}
+    if(!composite){note.hidden=true;note.textContent='';return;}
+    note.hidden=false;
+    note.textContent='本次选择 '+names.length+' 张：纯本体 '+plain+' / 合成帧 '+composite+'。'
+      +'基础状态（待机/移动/胜利/倒下/灵魂/复活）请只导入纯本体帧；合成帧请放入素材收件箱，或导入到明确需要附属物的状态（如技能准备）。'
+      +'如果本状态确实要带召唤物，请在动作卡的「是否包含召唤物」改为“是”并写明出现时机。';
+  }
+  if(typeof renderGroups==='function'){
+    const baseRenderGroups=renderGroups;
+    renderGroups=function(){
+      baseRenderGroups();
+      const groupsRoot=$('#pixel-import-groups');
+      if(groupsRoot){
+        for(const div of groupsRoot.querySelectorAll('.pixel-import-group')){
+          const names=[...div.querySelectorAll('img')].map(img=>img.alt||'');
+          const head=div.querySelector('b');
+          if(head&&names.length&&names.every(n=>companionStem(n))&&/未分类/.test(head.textContent))head.textContent='未分类（疑似合成帧）';
+        }
+      }
+      updateCompanionNotice();
+    };
+  }
+})();

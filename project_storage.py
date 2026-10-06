@@ -19,7 +19,8 @@ import uuid
 from pathlib import Path
 
 from app_metadata import VERSION
-from studio_core import StudioError, SAFE, identifier, json_bytes, validate
+from studio_core import (StudioError, SAFE, identifier, json_bytes,
+                         normalize_declarations, validate)
 
 FORMAT_VERSION = 1
 HISTORY_NAME = re.compile(r"[0-9]{6,}(?:-[0-9a-f]{64})?\.json\Z")
@@ -107,6 +108,8 @@ def persist(store, p):
         snapshot(directory, raw)  # Failure must stop before replacing project.json.
     p["formatVersion"] = FORMAT_VERSION
     p["lastSavedWith"] = VERSION
+    # 可选声明字段只在保存时补齐并写回；读取缺省 = “未标注”，不改旧文件。
+    normalize_declarations(p)
     write_bytes(pending, json_bytes(p))
     pending.replace(target)
     store.asset_catalog_cache.pop(p["id"], None)

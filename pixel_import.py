@@ -79,7 +79,8 @@ def add_presets(store, pid, revision, slots=None):
 
 
 def import_images(store, pid, request):
-    from studio_core import StudioError, integer, image_from, png_bytes, validate
+    from studio_core import (StudioError, integer, image_from, png_bytes, validate,
+                             asset_variant, BASE_STATE_SLOTS)
     with store.lock:
         old = store.load(pid)
         if request.get("revision") != old["revision"]:
@@ -151,15 +152,18 @@ def import_images(store, pid, request):
                 digest = hashlib.sha256(payload).hexdigest()
                 aid = digest[:24] + "_png"
                 cell_name = path.name if settings is None else f"{path.stem}_{index + 1:03}.png"
+                variant = asset_variant(path.name)
                 # Preview the entire mutation before add_asset writes any payload.
-                p["assets"].setdefault(aid, {"id": aid, "name": cell_name, "category": "pixel", "mime": "image/png", "width": w, "height": h})
-                pending.append((target, aid, cell_name, payload, w, h))
+                p["assets"].setdefault(aid, {"id": aid, "name": cell_name, "category": "pixel",
+                                             "mime": "image/png", "width": w, "height": h,
+                                             "variant": variant, "sourceNote": ""})
+                pending.append((target, aid, cell_name, payload, w, h, variant))
                 if len(pending) > MAX_FRAMES:
                     raise StudioError(f"一次最多导入 {MAX_FRAMES} 张画稿，请分批导入")
         if not pending:
             raise StudioError("所选网格全部透明，没有可导入的画稿；可关闭“跳过全透明格”")
         changed_targets, inbox = set(), list(p.get("pixelInbox", []))
-        for target, aid, name, payload, w, h in pending:
+        for target, aid, name, payload, w, h, _variant in pending:
             if not target:
                 if aid not in inbox:
                     inbox.append(aid)
@@ -176,11 +180,47 @@ def import_images(store, pid, request):
         history.mkdir(exist_ok=True)
         from studio_core import json_bytes
         (history / f"{old['revision']:06}.json").write_bytes(json_bytes(old))
-        for target, aid, name, payload, w, h in pending:
+        for target, aid, name, payload, w, h, _variant in pending:
             store.add_asset(p, name, payload, "pixel", enforce_limits=True)
         p["revision"] += 1
         p["updated"] = time.time()
         store._write(p)
+        # 同名"纯本体帧 + 合成帧"检测（2026-10-06 凉水基础帧事故的直接源头）：
+        # 提示作者三选一，基础状态误用合成帧由检查页 warning 兜底。
+        from studio_core import COMPANION_SUFFIXES
+        def base_stem(cell_name):
+            stem = str(cell_name).rsplit(".", 1)[0].casefold()
+            for suffix in COMPANION_SUFFIXES:
+                if stem.endswith(suffix):
+                    return stem[: len(stem) - len(suffix)]
+            return stem
+        variants = {}
+        for _target, _aid, cell_name, *_rest in pending:
+            variants.setdefault(base_stem(cell_name), set()).add(asset_variant(cell_name))
+        composite = sum(1 for row in pending if row[6] == "composite")
+        plain = sum(1 for row in pending if row[6] == "plain")
+        pairs = sum(1 for names in variants.values() if {"plain", "composite"} <= names)
+        base_slots = set()
+        for target, _aid, _cell_name, _payload, _w, _h, row_variant in pending:
+            if row_variant != "composite" or not target:
+                continue
+            animation = targets.get(target)
+            if animation and animation.get("slot") in BASE_STATE_SLOTS:
+                base_slots.add(animation["slot"])
+        notice = None
+        if composite:
+            notice = {
+                "composite": composite, "plain": plain, "pairs": pairs,
+                "base_state_targets": base_slots,
+                "hint": (
+                    f"检测到 {composite} 张带附属物后缀（如 _sp）的合成帧；"
+                    "基础状态（待机/移动/胜利/倒下/灵魂/复活）请只导入纯本体帧；"
+                    "合成帧请放入素材收件箱，或导入到明确需要附属物的状态（如技能准备）。"
+                    "如果本状态确实要带召唤物，请在动作卡中把『包含召唤物』改为“是”并写明时机。"
+                ),
+            }
         return {"project": p, "frames": len(pending), "animations": len(changed_targets),
                 "targets": sorted(changed_targets), "createdTargets": new_targets,
-                "inbox": len({aid for target, aid, *_ in pending if not target})}
+                "inbox": len({row[1] for row in pending if not row[0]}),
+                "variantCounts": {"plain": plain, "composite": composite},
+                "companionNotice": notice}
