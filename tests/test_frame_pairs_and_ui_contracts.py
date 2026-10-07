@@ -240,7 +240,7 @@ class DeclarationWorkflowTests(unittest.TestCase):
             self.assertEqual("composite", json.loads(
                 z.read("declarations.json").decode("utf-8"))["animations"][0]["variant"])
 
-    def test_pixel_import_returns_companion_notice(self):
+    def test_pixel_import_rejects_unconfirmed_composite_base_slot_atomically(self):
         request = {"revision": self.p["revision"], "hold": 4, "files": [
             {"name": "walk_001.png", "path": "新角色/前进/walk_001.png",
              "target": "preset:walk_front",
@@ -249,14 +249,13 @@ class DeclarationWorkflowTests(unittest.TestCase):
              "target": "preset:walk_front",
              "data": base64.b64encode(png_bytes(frame((8, 8, 8, 255)))).decode()},
         ]}
-        result = pixel_import.import_images(self.store, self.p["id"], request)
-        self.assertEqual({"plain": 1, "composite": 1}, result["variantCounts"])
-        self.assertIsNotNone(result["companionNotice"])
-        self.assertEqual(1, result["companionNotice"]["pairs"])
-        self.assertIn("walk_front", result["companionNotice"]["base_state_targets"])
-        project = result["project"]
-        variants = {asset.get("variant") for asset in project["assets"].values()}
-        self.assertIn("composite", variants)
+        before = self.store.load(self.p["id"])
+        with self.assertRaisesRegex(StudioError, "基础状态"):
+            pixel_import.import_images(self.store, self.p["id"], request)
+        after = self.store.load(self.p["id"])
+        self.assertEqual(before["revision"], after["revision"])
+        self.assertEqual(before["assets"], after["assets"])
+        self.assertEqual(before["animations"], after["animations"])
 
 
 if __name__ == "__main__":

@@ -23,6 +23,7 @@ SOURCE_FILES = (
     'web/project-storage.css',
     'tests/test_project_storage.py',
     'studio_compile.py',
+    'tests/test_pixel_import_safety.py',
     'bridge.py',
     'build_distribution.py',
     'starpoint-runtime.config',
