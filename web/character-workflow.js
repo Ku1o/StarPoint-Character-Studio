@@ -21,3 +21,19 @@ function renderGameplay(){
   bindValue('#gameplay-notes',apply((d,v)=>d.notes=v));
   for(const a of g.abilities){for(const key of ['name','description'])bindValue('#ability-'+key+'-'+a.slot,apply((d,v)=>{d.abilities.find(x=>x.slot===a.slot)[key]=v;const plan=S.p.productionBrief?.plans?.abilities?.find(x=>x.slot===a.slot);if(plan)plan[key==='description'?'authorDescription':'name']=v;}));$('#ability-main-'+a.slot).onchange=e=>mutate(()=>{S.p.gameplay=normalizedGameplay(S.p.gameplay);S.p.gameplay.abilities.find(x=>x.slot===a.slot).mainOnly=e.target.checked;},false);}
 }
+
+// Reuse the declaration controls on the action card; no separate JSON editor.
+const renderAnimationBeforeAuthorDeclarations=renderAnimation;
+renderAnimation=function(){
+  renderAnimationBeforeAuthorDeclarations();
+  if(typeof authorAnimationRow!=='function')return;
+  const anim=current();if(!anim)return;
+  if(S.page==='animations'){
+    const guide=$('.pixel-action-guide'),card=document.createElement('div');card.className='author-animation-card';card.innerHTML=authorAnimationRow(anim);
+    if(guide)guide.after(card);else $('.editor')?.before(card);
+    wireAuthorDeclarations(card);
+    for(const button of $$('[data-animation]')){const action=S.p.animations.find(a=>a.id===button.dataset.animation);if(!action)continue;const source=document.createElement('small');source.className='author-library-source';source.textContent='来源：'+authorAnimationSource(action).label;button.append(source);}
+  }else if(S.page==='effects'){
+    const card=document.createElement('div');card.className='author-animation-card';card.innerHTML=authorEffectRow(anim);card.querySelector('[data-author-edit-effect]')?.remove();$('.editor')?.before(card);wireAuthorDeclarations(card);
+  }
+};

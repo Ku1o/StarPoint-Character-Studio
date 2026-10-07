@@ -18,7 +18,8 @@ from audio_compile import effect_audio, encoded_sound, sound_path, mp3_decode
 from character_contract import export_contract
 from studio_core import (StudioError, UI_SLOTS, PNG, FAKE_PNG, amf_bytes, image_from,
                          json_bytes, png_bytes, make_zip, project_checks, validate, atlas_crop, native_commands,
-                         asset_variant, animation_variant, declaration_payload)
+                         clip_variant, declaration_payload, author_readme,
+                         BASE_STATE_SLOTS)
 
 # 官方/donor 键集（deepcopy 模板 + 编译期断言）。来源：
 # character/ekaki_girl/pixelart/{pixelart.timeline,pixelart.frame,sprite_sheet.atlas}
@@ -87,32 +88,8 @@ def transformed_cell(store, p, clip, aid=None):
     return cell, x, y
 
 
-# ---------------------------------------------------------------------------
-# `_sp`（本体+附属物）合成帧 vs 纯本体帧：编译时识别、提示、按状态取用
-# 2026-10-06 凉月基础帧事故：作者的 143 个 clip 全部引用 `_sp` 合成帧，
-# 基础状态（待机/移动/胜利/倒下/灵魂/复活）因此带上了召唤物；换成纯本体帧时
-# 又必须按"纯本体在合成帧内的偏移 (dx,dy)"做 clip.x += dx 的补偿（1.4.143
-# 事故把符号做反，整体偏移 (-24,-24)）。
-# ---------------------------------------------------------------------------
-
-SUMMON_STATE_SLOTS = frozenset({"skill_ready", "special_land", "special_pose"})
-
-
-def companion_suffix(name):
-    from studio_core import COMPANION_SUFFIXES
-    stem = str(name or "").rsplit(".", 1)[0]
-    for suffix in COMPANION_SUFFIXES:
-        if stem.casefold().endswith(suffix):
-            return stem[: len(stem) - len(suffix)], suffix
-    return None
-
-
-def _asset_by_name(p, name):
-    target = str(name).casefold()
-    return next((aid for aid, asset in p["assets"].items()
-                 if str(asset.get("name", "")).casefold() == target), None)
-
-
+# Filename pairs are useful review evidence, not authority to switch artwork.
+# Keep the exact offset utility for explicit repair tooling and regression tests.
 def detect_frame_offset(plain, composite, max_candidates=65536):
     """纯本体帧在合成帧内的唯一精确偏移；返回 (offset, matches)。
 
@@ -139,90 +116,43 @@ def detect_frame_offset(plain, composite, max_candidates=65536):
 
 
 def plan_pixel_frames(store, p, animations, variant):
-    """逐 clip 决定帧来源：基础状态用纯本体、技能/特殊状态保留合成帧。
+    """Keep the artist-selected frames; never infer a replacement from a filename pair.
 
-    返回 ``swaps``（(anim_id, clip_index) -> (asset_id, dx, dy)）与报告。
-    只有"存在同帧纯本体/合成帧对照"的素材才参与自动选择；无法证明偏移或
-    带非位移变换（翻转/旋转/缩放/透明度）时对基础状态失败关闭。
+    Filenames are evidence for review, not permission to add/remove a companion.
+    This guard also protects single-animation previews which bypass compile_project.
+    The empty swap mapping is retained for the atlas compiler's existing interface.
     """
-    swaps = {}
-    report = {"variant": variant, "slots": [], "kept": [], "swaps": [], "issues": []}
-    cache = {}
+    report = {"variant": variant, "slots": [], "kept": [], "swaps": [], "issues": [],
+              "problems": []}
     for anim in animations:
         if anim.get("variant", "normal") != variant or not anim.get("clips"):
             continue
         slot = anim.get("slot", "")
-        keep_summon = slot in SUMMON_STATE_SLOTS
+        companion = anim.get("includesCompanion", "")
+        note = anim.get("companionNote", "")
+        note = note.strip() if isinstance(note, str) else ""
         row = {"slot": slot, "name": anim.get("name"), "clips": len(anim["clips"]),
-               "keep_summon": keep_summon, "swapped": 0, "problems": []}
+               "keep_summon": False, "swapped": 0, "problems": []}
         for index, clip in enumerate(anim["clips"]):
-            aid = clip.get("asset")
-            asset = p["assets"].get(aid) or {}
-            name = asset.get("name", "")
-            pair = companion_suffix(name)
-            counterpart = None
-            if pair is not None:
-                stem, _suffix = pair
-                counterpart = _asset_by_name(p, stem + ".png")
+            if clip_variant(p, clip.get("asset")) != "composite":
+                continue
+            label = f"{anim.get('name') or slot}（{slot}）第 {index + 1} 段"
+            if companion is False:
+                row["problems"].append(
+                    label + "使用合成帧，但声明为不包含附属物；请替换为纯本体帧，"
+                    "或确认包含附属物并填写出现时机。")
+            elif slot in BASE_STATE_SLOTS and (companion is not True or not note):
+                row["problems"].append(
+                    label + "是基础状态合成帧，尚未确认附属物及出现时机；"
+                    "请在动作说明中确认，或手动选择纯本体帧。")
             else:
-                stem = str(name).rsplit(".", 1)[0]
-                counterpart = _asset_by_name(p, stem + "_sp.png")
-            if counterpart is None:
-                continue
-            current_composite = pair is not None
-            want_composite = keep_summon
-            if current_composite == want_composite:
-                if current_composite:
-                    row["keep_summon"] = True
-                    report["kept"].append({"slot": slot, "clip": index})
-                continue
-            transform = (clip.get("flip"), float(clip.get("rotation", 0)),
-                         float(clip.get("scale", 1)), float(clip.get("opacity", 1)))
-            if any((transform[0], transform[1] != 0, transform[2] != 1, transform[3] != 1)):
-                message = (f"{slot} 第 {index + 1} 段带翻转/旋转/缩放/透明度，"
-                           "无法保证合成帧与纯本体帧的偏移补偿")
-                if not keep_summon:
-                    row["problems"].append(message)
-                else:
-                    report["issues"].append(message)
-                continue
-            key = (current_composite, counterpart, aid)
-            if key not in cache:
-                plain_aid = counterpart if current_composite else aid
-                composite_aid = aid if current_composite else counterpart
-                plain = image_from(store.asset_bytes(p, plain_aid))
-                composite = image_from(store.asset_bytes(p, composite_aid))
-                offset, matches = detect_frame_offset(plain, composite)
-                cache[key] = (offset, matches)
-            offset, matches = cache[key]
-            if matches != 1 or offset is None:
-                message = (f"{slot} 第 {index + 1} 段：无法证明纯本体帧在合成帧内的"
-                           f"唯一偏移（匹配 {matches} 处），不能自动切换素材")
-                if not keep_summon:
-                    row["problems"].append(message)
-                else:
-                    report["issues"].append(message)
-                continue
-            dx, dy = offset
-            if keep_summon:
-                swaps[(anim["id"], index)] = (counterpart, -dx, -dy)
-            else:
-                swaps[(anim["id"], index)] = (counterpart, dx, dy)
-            row["swapped"] += 1
-            report["swaps"].append({
-                "slot": slot, "clip": index,
-                "from": asset.get("name"), "to": p["assets"][counterpart].get("name"),
-                "offset": [dx, dy] if not keep_summon else [-dx, -dy],
-            })
+                row["keep_summon"] = True
+                report["kept"].append({"slot": slot, "clip": index})
         report["slots"].append(row)
-    problems = [problem for row in report["slots"] for problem in row["problems"]]
-    report["problems"] = problems
-    if problems:
-        raise StudioError(
-            "基础状态引用了合成帧，但无法按官方语义替换为纯本体帧：\n- "
-            + "\n- ".join(problems)
-        )
-    return swaps, report
+        report["problems"].extend(row["problems"])
+    if report["problems"]:
+        raise StudioError("素材来源与动作声明不一致：\n- " + "\n- ".join(report["problems"]))
+    return {}, report
 
 
 def compile_pixelart_with_report(store, p, animations, variant, code, frame_plan=None):
@@ -565,6 +495,11 @@ def compiled_scene_preview(store, p):
 def compile_project(store, pid):
     p = store.load(pid)
     validate(p)
+    checks = project_checks(p)
+    blockers = [item for item in checks["issues"] if item.get("blocking")]
+    if blockers:
+        raise StudioError("交付检查发现需先修正的问题（仍可保存并导出草稿工程）：\n- "
+                          + "\n- ".join(item["text"] for item in blockers))
     code = p["identity"].get("code", "")
     if not re.fullmatch(r"[a-z][a-z0-9_]{1,70}", code):
         raise StudioError("请在角色资料中填写英文资源代号，以小写字母开头，仅含小写字母、数字和下划线")
@@ -641,7 +576,10 @@ def compile_project(store, pid):
         receipts.append({"kind": "ui-handoff-atlas", "cells": len(records), "readback": True, "gameReady": False})
     pending.extend(["角色/技能/能力/成长/玛纳板与服务端数据接入", "UI 交接图集已可生成；游戏专用 illustration 图集、定位表与界面蒙版仍需接入校准", "Android/iOS 技能切入平台纹理", "原生技能时序、音效挂接与真机验收", "新角色 ID 与存档导入导出兼容"])
     report = {"schema": "studio-compile-report-v1", "project": p["name"], "sourceRevision": p["revision"], "gameReady": False, "receipts": receipts, "pending": pending, "files": [{"path": k, "sha256": hashlib.sha256(v).hexdigest(), "size": len(v)} for k, v in sorted(files.items())]}
+    report["checks"] = checks
+    report["readiness"] = checks.get("readiness", {})
     files["report.json"] = json_bytes(report)
+    files["README-稿主必读.md"] = author_readme(p).encode("utf-8")
     files["声音用途与台词.json"] = json_bytes({"voices": p.get("voices", []), "sounds": p.get("sounds", []), "note": "用途与台词用于交接；主界面语音表、角色喊声槽位与剧情字幕仍需接入绑定。"})
     files["制作需求.json"] = json_bytes({"identity": p["identity"], "skill": p["skill"], "scene": p["scene"], "notes": p["notes"], "template": p["template"]})
     files["MOD角色接入契约.json"] = json_bytes(export_contract(store, p))

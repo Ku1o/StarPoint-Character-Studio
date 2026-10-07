@@ -109,175 +109,53 @@ def asset_variant(name):
 
 
 def clip_variant(p, aid):
-    asset = p["assets"].get(aid) or {}
+    """Actual filename evidence takes precedence over editable source labels."""
+    assets = p.get("assets", {})
+    asset = assets.get(aid) if isinstance(assets, dict) and isinstance(aid, str) else None
+    if not isinstance(asset, dict):
+        return "unknown"
+    names = [asset.get(key) for key in ("name", "file", "sourceFile", "sourceName", "logical")]
+    if any(isinstance(name, str) and name and asset_variant(name) == "composite" for name in names):
+        return "composite"
     variant = asset.get("variant")
-    if variant in ("plain", "composite"):
+    if isinstance(variant, str) and variant in ("plain", "composite"):
         return variant
-    return asset_variant(asset.get("name", ""))
+    if isinstance(variant, str) and variant in ("effect", "ui", "unknown"):
+        return "unknown"
+    return "plain" if any(isinstance(name, str) and name for name in names) else "unknown"
 
 
 def animation_variant(p, anim):
-    variants = {clip_variant(p, clip.get("asset")) for clip in anim.get("clips") or []}
+    clips = anim.get("clips")
+    clips = clips if isinstance(clips, list) else []
+    variants = {clip_variant(p, clip.get("asset")) for clip in clips if isinstance(clip, dict)}
     if "composite" in variants and "plain" in variants:
         return "mixed"
     if "composite" in variants:
         return "composite"
+    if "unknown" in variants:
+        return "unknown"
     return "plain" if variants else ""
 
 
 def normalize_declarations(p):
-    """补齐可选声明字段（缺省 = 未标注），不改旧文件其余内容。"""
-    if not isinstance(p.get("authorNotes"), str):
-        p["authorNotes"] = ""
-    for group in ("animations", "effects"):
-        for anim in p.get(group, []):
-            if not isinstance(anim, dict):
-                continue
-            if not isinstance(anim.get("purpose"), str):
-                anim["purpose"] = anim.get("purpose") or ""
-            if not isinstance(anim.get("includesCompanion"), bool):
-                anim["includesCompanion"] = "" if anim.get("includesCompanion") in (None, "") else bool(anim.get("includesCompanion"))
-            if not isinstance(anim.get("companionNote"), str):
-                anim["companionNote"] = ""
-            if not isinstance(anim.get("origin"), str):
-                anim["origin"] = anim.get("origin") or ""
-            if not isinstance(anim.get("originNote"), str):
-                anim["originNote"] = anim.get("originNote") or ""
-    if not isinstance(p.get("uiDeclarations"), dict):
-        p["uiDeclarations"] = {}
-    if not isinstance(p.get("voiceDeclarations"), list):
-        p["voiceDeclarations"] = []
-    return p
+    from author_declarations import normalize_declarations as normalize
+    return normalize(p)
 
 
 def validate_declarations(p):
-    for group in ("animations", "effects"):
-        for anim in p.get(group, []):
-            companion = anim.get("includesCompanion")
-            if companion is not None and companion not in ("", True, False):
-                raise StudioError("动作的“是否包含召唤物”取值无效")
-            if anim.get("origin") and anim["origin"] not in ("", *EFFECT_ORIGINS):
-                raise StudioError("特效来源声明无效（复用/重皮/原创）")
-            for field in ("companionNote", "originNote", "purpose"):
-                if len(str(anim.get(field) or "")) > 500:
-                    raise StudioError("动作说明过长")
-    for key, spec in (p.get("uiDeclarations") or {}).items():
-        if ":" not in key or not isinstance(spec, dict):
-            raise StudioError("UI 用途声明无效")
-        if spec.get("mask") not in (None, "", *UI_MASK_VALUES):
-            raise StudioError("UI 遮罩声明无效")
-    for item in p.get("voiceDeclarations") or []:
-        if not isinstance(item, dict) or len(item.get("text") or "") > 2000:
-            raise StudioError("语音声明无效")
-        if item.get("entry") not in (None, "", *VOICE_ENTRIES):
-            raise StudioError("语音入口声明无效（ally/battle/home/login/words）")
-    return p
+    from author_declarations import validate_declarations as validate_notes
+    return validate_notes(p)
 
 
 def declaration_payload(p):
-    """导出/编译用的“来源与声明”载荷（wf_character_flow 的 preflight 分组同源）。"""
-    normalize_declarations(p)
-    animations = []
-    for anim in p.get("animations", []):
-        animations.append({
-            "id": anim.get("id"),
-            "name": anim.get("name"),
-            "slot": anim.get("slot", ""),
-            "variant": animation_variant(p, anim),
-            "includesCompanion": anim.get("includesCompanion", ""),
-            "companionNote": anim.get("companionNote", ""),
-            "purpose": anim.get("purpose", ""),
-        })
-    effects = [{
-        "id": effect.get("id"),
-        "name": effect.get("name"),
-        "origin": effect.get("origin", ""),
-        "originNote": effect.get("originNote", ""),
-    } for effect in p.get("effects", [])]
-    return {
-        "schema": "starpoint-character-studio-declarations-v1",
-        "authorNotes": p.get("authorNotes", ""),
-        "animations": animations,
-        "effects": effects,
-        "uiDeclarations": copy.deepcopy(p.get("uiDeclarations") or {}),
-        "voiceDeclarations": copy.deepcopy(p.get("voiceDeclarations") or []),
-    }
+    from author_declarations import declaration_payload as payload
+    return payload(p)
 
 
-_PLAY_LABELS = {"once": "单次", "loop": "循环", "pass": "衔接下一段", "stop": "停在首帧"}
-_VARIANT_LABELS = {"plain": "纯本体", "composite": "合成帧", "mixed": "纯本体+合成帧混用", "": "未标注"}
-
-
-def author_readme(p):
-    """`.wfchar` 包内《README-稿主必读.md》：动作/语音/UI/特效/未标注项清单。"""
-    normalize_declarations(p)
-    lines = [
-        "# 稿主必读（角色工坊自动生成）",
-        "",
-        "这个包是《星点角色工坊》的可编辑创作工程，不是可直接安装的游戏补丁。",
-        "在工坊里用「打开工程 / 参考包」导入本包即可继续制作。",
-        "",
-        "## 1. 动作清单",
-        "",
-        "| 槽位 | 中文 | 画稿段数 | 总帧 | 播放 | 帧来源 | 包含召唤物 | 说明 |",
-        "| --- | --- | --- | --- | --- | --- | --- | --- |",
-    ]
-    for anim in p.get("animations", []):
-        clips = anim.get("clips") or []
-        frames = sum(int(clip.get("hold", 0)) for clip in clips)
-        companion = {True: "是", False: "否"}.get(anim.get("includesCompanion"), "未标注")
-        note = str(anim.get("companionNote") or anim.get("purpose") or "").replace("|", "／")
-        lines.append(
-            f"| {anim.get('slot', '')} | {LABELS.get(anim.get('slot'), anim.get('name', ''))} "
-            f"| {len(clips)} | {frames} | {_PLAY_LABELS.get(anim.get('kind'), anim.get('kind', ''))} "
-            f"| {_VARIANT_LABELS.get(animation_variant(p, anim), '')} | {companion} | {note} |"
-        )
-    lines += ["", "## 2. 语音入口表", "",
-              "| 文件/素材 | 入口 | 用途 | 台词 |", "| --- | --- | --- | --- |"]
-    if p.get("voiceDeclarations"):
-        for item in p["voiceDeclarations"]:
-            lines.append(
-                f"| {item.get('file') or item.get('asset') or ''} | {item.get('entry') or '未标注'} "
-                f"| {item.get('usage') or ''} | {str(item.get('text') or '').replace('|', '／')} |"
-            )
-    else:
-        lines.append("| （未登记） | — | — | — |")
-    lines += ["", "## 3. UI 用途声明", ""]
-    if p.get("uiDeclarations"):
-        for key, spec in sorted(p["uiDeclarations"].items()):
-            lines.append(
-                f"- {key}：自动裁切={'是' if spec.get('autoCrop') else '否'}，"
-                f"遮罩={spec.get('mask') or 'auto'}，说明={spec.get('note') or '（无）'}"
-            )
-    else:
-        lines.append("- （五类重点用途尚未声明取景/遮罩意图）")
-    lines += ["", "## 4. 特效来源声明", ""]
-    if p.get("effects"):
-        for effect in p["effects"]:
-            lines.append(
-                f"- {effect.get('name') or effect.get('id')}："
-                f"{effect.get('origin') or '未标注'}"
-                f"{'（' + effect['originNote'] + '）' if effect.get('originNote') else ''}"
-            )
-    else:
-        lines.append("- （尚未建立特效）")
-    unmarked = []
-    from action_presets import ACTION_PRESETS
-    preset_slots = {item["slot"] for item in ACTION_PRESETS}
-    for anim in p.get("animations", []):
-        if animation_variant(p, anim) in ("composite", "mixed") and anim.get("includesCompanion") not in (True, False):
-            unmarked.append(f"动作『{anim.get('name') or anim.get('slot')}』未说明是否包含召唤物")
-        if anim.get("slot") not in preset_slots and not str(anim.get("purpose") or "").strip():
-            unmarked.append(f"动作『{anim.get('name') or anim.get('slot')}』缺用途说明")
-    if not p.get("voiceDeclarations") and (p.get("voices") or p.get("sounds")):
-        unmarked.append("语音缺少入口/台词登记")
-    lines += ["", "## 5. 未标注项清单", ""]
-    if unmarked:
-        lines.extend(f"- {item}" for item in unmarked)
-    else:
-        lines.append("- 无")
-    lines.append("")
-    return "\n".join(lines)
+def author_readme(p, report=None):
+    from author_declarations import author_readme as readme
+    return readme(p, report)
 
 
 def amf_bytes(value):
@@ -517,7 +395,9 @@ class ProjectStore:
             if not path.is_absolute() and ".." not in path.parts and "\\" not in rel:
                 files["reference/" + rel] = (self.directory(pid) / "reference" / Path(rel)).read_bytes()
         files["交接说明.txt"] = ("星点角色工坊可编辑工程。用“打开工程 / 参考包”导入继续制作。\n这是创作工程，不是可直接安装的游戏补丁。\n").encode("utf-8")
-        files["README-稿主必读.md"] = author_readme(p).encode("utf-8")
+        checks = project_checks(p)
+        files["检查报告.json"] = json_bytes(checks)
+        files["README-稿主必读.md"] = author_readme(p, checks).encode("utf-8")
         files["declarations.json"] = json_bytes(declaration_payload(p))
         files["制作交接.json"] = json_bytes(export_handoff(p))
         return make_zip(files)
@@ -765,6 +645,7 @@ def native_commands(frames, parts, cells, group, tick, matrix=(1, 0, 0, 1, 0, 0)
 
 
 def validate(p):
+    validate_declarations(p)
     from project_storage import check_format
     check_format(p)
     from native_gameplay import validate_native
@@ -857,128 +738,140 @@ def validate(p):
         identifier(voice["id"])
         if not p["assets"].get(voice.get("asset"), {}).get("mime", "").startswith("audio/"):
             raise StudioError("语音引用无效")
-    validate_declarations(p)
     return True
 
 
 def project_checks(p):
+    """Read-only shared report. canCompile is not author/game readiness."""
+    from portrait_editor import selection, contract_report
+    from author_declarations import declaration_report, make_issue, readiness
     issues = []
-    from portrait_editor import selection
 
-    def issue(level, page, text, position="", fix="", **extra):
-        parts = [text]
-        if position:
-            parts.append("位置：" + position)
-        if fix:
-            parts.append("改法：" + fix)
-        issues.append({"level": level, "page": page, "text": "　".join(parts),
-                       "position": position, "fix": fix, **extra})
+    def add(code, level, page, text, *, id="", position="", location="", fix="", **extra):
+        issues.append(make_issue(code, level, page, text, id=id, position=position,
+                                 location=location, fix=fix, **extra))
 
-    for key, label in (("base", "基础立绘"), ("evolved", "进化立绘")):
-        if not p["portraits"].get(key):
-            issues.append({"level": "todo", "page": "portraits", "text": f"尚未提供{label}"})
-        missing = [UI_SLOTS[slot][0] for slot in UI_SLOTS if slot != "full_shot" and not selection(p, key, slot).get("asset")]
+    # Rendering defaults do not imply the author's crop/mask intent.
+    view = {**p, "uiDeclarations": {}}
+    for form, label in (("base", "基础立绘"), ("evolved", "进化立绘")):
+        if not p.get("portraits", {}).get(form):
+            add("portrait_missing", "todo", "portraits", f"尚未提供{label}", id=form,
+                position="立绘与界面 → " + label, location="portraits." + form,
+                fix="导入立绘母版，或在交接说明中明确复用方案")
+        missing = [UI_SLOTS[slot][0] for slot in UI_SLOTS if slot != "full_shot" and not selection(view, form, slot).get("asset")]
         if missing:
-            issues.append({"level": "todo", "page": "portraits", "text": f"{'基础' if key == 'base' else '进化'}形态有 {len(missing)} 项界面图片待导入或裁剪：" + "、".join(missing)})
-    if not p["animations"]:
-        issues.append({"level": "todo", "page": "animations", "text": "尚未建立角色动作"})
-    if not p["effects"]:
-        issues.append({"level": "todo", "page": "effects", "text": "尚未建立技能特效，可导入模板或新建序列特效"})
-    if not p["voices"]:
-        issues.append({"level": "todo", "page": "voices", "text": "尚未提供语音和台词；无配音角色可在交接备注说明"})
-    if not p.get("sounds"):
-        issues.append({"level": "todo", "page": "voices", "text": "尚未提供技能/战斗音效；角色喊声与技能音效需要分别准备"})
-    if not p["scene"]["tracks"]:
-        issues.append({"level": "info" if p.get("template") else "todo", "page": "scene",
-                       "text": "尚未生成技能演示，可打开技能预览检查并生成可用演示。" if p.get("template") else "尚未编排小人、特效与声音的整体演出"})
-    for group, page in (("animations", "animations"), ("effects", "effects")):
-        for anim in p[group]:
-            length = len(anim.get("nativeFrames", [])) or sum(c["hold"] for c in anim.get("clips", []))
-            for event in anim.get("soundEvents", []):
+            add("ui_images_missing", "todo", "portraits",
+                f"{'基础' if form == 'base' else '进化'}形态有 {len(missing)} 项界面图片待导入或裁剪：" + "、".join(missing),
+                id=form, position="立绘与界面 → " + label, location="uiImages." + form,
+                fix="逐用途导入独立图片或从母版裁剪，不要仅缩放一张图替代所有用途")
+    for group, code, page, text, fix in (
+        ("animations", "animations_missing", "animations", "尚未建立角色动作", "导入动作帧组或复用模板动作"),
+        ("effects", "effects_missing", "effects", "尚未建立技能特效，可导入模板或新建序列特效", "选择复用、重皮或原创方案并关联特效素材"),
+        ("voices", "voices_missing", "voices", "尚未提供语音和台词；无配音角色可在交接备注说明", "导入语音并填写用途/台词，或说明无配音"),
+        ("sounds", "sounds_missing", "voices", "尚未提供技能/战斗音效；角色喊声与技能音效需要分别准备", "导入音效并绑定时点，或说明复用方案"),
+    ):
+        if not p.get(group):
+            add(code, "todo", page, text, position=page, location=group, fix=fix)
+    # An empty project can be exported as a draft. A UI-only art candidate is
+    # valid, so do not require animation frames when renderable UI art exists.
+    animations = p.get("animations")
+    playable = False
+    if isinstance(animations, list):
+        for anim in animations:
+            if not isinstance(anim, dict):
+                continue
+            clips = anim.get("clips")
+            if isinstance(clips, list) and any(
+                    isinstance(clip, dict) and isinstance(clip.get("asset"), str)
+                    and bool(clip.get("asset")) and type(clip.get("hold")) is int
+                    and clip["hold"] > 0 for clip in clips):
+                playable = True
+                break
+    portraits = p.get("portraits") or {}
+    ui_images = p.get("uiImages") or {}
+    ui_sources = p.get("uiSources") or {}
+    has_ui_art = any(portraits.values()) or any(ui_sources.values()) or any(
+        isinstance(spec, dict) and spec.get("asset") for spec in ui_images.values())
+    if not playable and not has_ui_art:
+        add("candidate_visual_missing", "todo", "animations",
+            "工程没有可播放动作或可导出的界面图，不能生成离线美术候选",
+            position="像素动作 / 立绘与界面", location="animations",
+            fix="导入至少一套动作画稿或一张可导出的界面图；空工程仍可保存或导出草稿",
+            blocking=True)
+    if not p.get("scene", {}).get("tracks"):
+        add("scene_missing", "info" if p.get("template") else "todo", "scene",
+            "尚未生成技能演示，可打开技能预览检查并生成可用演示。" if p.get("template") else "尚未编排小人、特效与声音的整体演出",
+            position="技能预览 → 整体演出", location="scene.tracks", fix="编排动作、特效与音频；预览不代替实战验收")
+    for group in ("animations", "effects"):
+        values = p.get(group)
+        if not isinstance(values, list):
+            continue  # Declaration schema report includes the malformed container.
+        for anim in values:
+            if not isinstance(anim, dict):
+                continue
+            aid = anim.get("id") if isinstance(anim.get("id"), str) else ""
+            name = anim.get("name") if isinstance(anim.get("name"), str) else aid
+            clips = anim.get("clips") if isinstance(anim.get("clips"), list) else []
+            frames = anim.get("nativeFrames") if isinstance(anim.get("nativeFrames"), list) else []
+            length = len(frames) or sum(c.get("hold", 0) for c in clips if isinstance(c, dict) and type(c.get("hold")) is int)
+            events = anim.get("soundEvents") if isinstance(anim.get("soundEvents"), list) else []
+            for index, event in enumerate(events):
+                if not isinstance(event, dict):
+                    continue
+                location = f"{group}.{aid}.soundEvents[{index}]"
                 if not event.get("asset"):
-                    issues.append({"level": "todo", "page": page, "id": anim["id"], "text": anim["name"] + "有未绑定的声音事件"})
-                elif event["start"] >= length:
-                    issues.append({"level": "warning", "page": page, "id": anim["id"], "text": anim["name"] + "有声音安排在画面结束之后"})
-            for issue in anim.get("issues", []):
-                issues.append({"level": "warning", "page": page, "id": anim["id"], "text": anim["name"] + "：" + issue})
-            if not anim.get("clips") and not anim.get("nativeFrames"):
-                issues.append({"level": "todo", "page": page, "id": anim["id"], "text": anim["name"] + "没有可播放画面"})
-    # ------------------------------------------------------------------
-    # 来源与声明（2026-10-06 凉月复盘；提案《角色工坊交互改进提案》第 3 节）
-    # ------------------------------------------------------------------
-    from action_presets import ACTION_PRESETS
-    preset_slots = {item["slot"] for item in ACTION_PRESETS}
-    for anim in p["animations"]:
-        if anim.get("native"):
-            continue
-        variant = animation_variant(p, anim)
-        slot = anim.get("slot", "")
-        companion = anim.get("includesCompanion", "")
-        if slot in BASE_STATE_SLOTS and variant in ("composite", "mixed") and companion is not True:
-            clips = sum(1 for clip in anim.get("clips", [])
-                        if clip_variant(p, clip.get("asset")) == "composite")
-            issue("warning", "animations",
-                  f"{anim.get('name') or slot} 等基础状态有 {clips} 段画稿疑似带附属物（_sp 合成帧）",
-                  position=f"像素动作 → {anim.get('name') or slot}（{slot}）",
-                  fix="若设计上确实要带，请在『是否包含召唤物』改为“是”并写明出现时机；"
-                      "否则请替换为无后缀的纯本体帧",
-                  id=anim["id"])
-        elif slot in COMPANION_STATE_SLOTS and variant in ("composite", "mixed") and companion not in (True, False):
-            issue("todo", "animations",
-                  f"『{anim.get('name') or slot}』尚未说明是否带召唤物",
-                  position=f"像素动作 → {anim.get('name') or slot}（{slot}）",
-                  fix="在该动作的『附属物说明』中二选一填写“带/不带”，否则制作方只能按默认处理",
-                  id=anim["id"])
-        if variant == "mixed" and companion not in (True, False):
-            issue("warning", "animations",
-                  f"动作『{anim.get('name') or slot}』同时导入了纯本体帧和合成帧",
-                  position=f"像素动作 → {anim.get('name') or slot}",
-                  fix="只保留一套，或明确说明两套各自的用途", id=anim["id"])
-        if slot not in preset_slots and not str(anim.get("purpose") or "").strip():
-            issue("todo", "animations",
-                  f"自定义动作『{anim.get('name') or slot}』还没有用途说明",
-                  position=f"像素动作 → {anim.get('name') or slot}",
-                  fix="填写用途、帧数、每帧停留与循环方式", id=anim["id"])
-    for effect in p["effects"]:
-        if not str(effect.get("origin") or "").strip():
-            issue("warning", "effects",
-                  f"技能特效『{effect.get('name') or effect.get('id')}』未声明来源",
-                  position=f"技能制作 → {effect.get('name') or effect.get('id')}",
-                  fix="选择：复用（某角色）/ 重皮（模板+配色）/ 完全原创（四件套）",
-                  id=effect["id"])
-    declared_voice_ids = {str(item.get("asset") or item.get("file") or "")
-                          for item in p.get("voiceDeclarations") or []}
-    missing_voice = [voice for voice in p.get("voices", [])
-                     if voice.get("asset") not in declared_voice_ids
-                     and voice.get("id") not in declared_voice_ids]
-    if missing_voice:
-        issue("todo", "voices",
-              f"有 {len(missing_voice)} 条语音没有登记入口分类或台词文本",
-              position="声音与台词 → 语音对照表",
-              fix="补 文件 / ally·battle·home / 用途 / 台词 四列")
-    if not p.get("voiceDeclarations") and (p.get("voices") or p.get("sounds")):
-        issue("info", "voices", "尚未登记语音入口对照表",
-              position="声音与台词", fix="按《稿主资源提供指南》补入口与台词登记")
-    for key in KEY_UI_SLOTS:
-        entries = [value for name, value in (p.get("uiDeclarations") or {}).items()
-                   if str(name).endswith(key)]
-        if entries:
-            continue
-        replaced = any(
-            selection(p, form, key).get("mode") == "image"
-            and selection(p, form, key).get("asset")
-            for form in ("base", "evolved")
-        )
-        if replaced:
-            issue("info", "portraits",
-                  f"『{UI_SLOTS[key][0]}』使用了单独替换图，但未声明取景/遮罩意图",
-                  position=f"立绘与界面 → {UI_SLOTS[key][0]}",
-                  fix="补充声明：是否禁止从母版自动裁切、是否需要形状遮罩")
+                    add("sound_event_unbound", "todo", group, name + "有未绑定的声音事件", id=aid,
+                        position=name + " → 声音事件", location=location, fix="绑定已有音频素材或删除该事件")
+                elif type(event.get("start")) is int and event["start"] >= length:
+                    add("sound_event_after_end", "warning", group, name + "有声音安排在画面结束之后", id=aid,
+                        position=name + " → 声音事件", location=location, fix="把事件开始帧移入动作播放区间")
+            for anim_issue in anim.get("issues", []) if isinstance(anim.get("issues", []), list) else []:
+                add("animation_import_warning", "warning", group, name + "：" + str(anim_issue), id=aid,
+                    position=name, location=f"{group}.{aid}.issues", fix="核对导入报告与原始素材；修复后重新导入")
+            if not clips and not frames:
+                add("animation_frames_missing", "todo", group, name + "没有可播放画面", id=aid,
+                    position=name, location=f"{group}.{aid}", fix="添加所选画稿或导入可播放的原生时间轴")
+    declarations = declaration_report(p)
+    issues.extend(declarations["issues"])
+    # Share the compiler's intent/geometry checks without reading source pixels.
+    # Malformed declarations already have blockers and cannot be resolved safely.
+    if not any(item["code"] == "declaration_type_invalid" for item in declarations["issues"]):
+        for problem in contract_report(None, p)["problems"]:
+            key, _, text = problem.partition(": ")
+            add("ui_contract_invalid", "warning", "portraits", text, id=key,
+                position="立绘与界面 → " + key, location="uiImages." + key,
+                fix="改用专用图片，或核对裁剪比例与对应 UI 声明后重新检查", blocking=True)
     for warning in p.get("warnings", []):
-        issues.append({"level": "warning", "page": "checks", "text": warning})
-    issues.extend(production_checks(p))
-    issues.append({"level": "info", "page": "identity", "text": "游戏接入待完成：角色与技能数据、平台纹理、存档兼容及真机验收由制作方确认"})
+        add("project_import_warning", "warning", "checks", str(warning),
+            position="检查与交付 → 导入报告", location="warnings", fix="核对导入报告，确认影响并修复资源")
+    # Adapt the established production report without changing its text or UI routing.
+    for item in production_checks(p):
+        text = item["text"]
+        rules = (("作者填写包缺少", "production_author_missing"),
+                 ("资源待补", "production_resource_missing"), ("资源待核验", "production_resource_review"),
+                 ("语音待补", "production_voice_missing"), ("音效待补", "production_sound_missing"),
+                 ("语音待核验", "production_voice_review"), ("音效待核验", "production_sound_review"),
+                 ("进化前后语音未成对", "production_voice_pair_missing"),
+                 ("稳定经验存在风险", "production_review_risk"), ("稳定经验待确认", "production_review_unconfirmed"),
+                 ("尚未填写名称", "production_plan_name_missing"), ("缺少名称", "production_plan_name_missing"),
+                 ("尚未填写自然语言描述", "production_plan_description_missing"), ("缺少自然语言说明", "production_plan_description_missing"),
+                 ("原生机制支持范围待", "production_native_support_review"),
+                 ("没有关联工程", "production_asset_unbound"), ("尚未关联工程", "production_asset_unbound"),
+                 ("引用了不存在", "production_asset_missing"), ("请说明原因", "production_not_applicable_reason"),
+                 ("必须明确技能预览", "production_preview_boundary"),
+                 ("尚未进行本地练习战", "production_combat_unverified"), ("尚未记录本地 CDN", "production_cdn_unrecorded"),
+                 ("当前阶段未完成", "production_stage_incomplete"))
+        code = next((code for marker, code in rules if marker in text), "production_review_pending")
+        rid = item.get("id", "")
+        add(code, item["level"], item["page"], text, id=rid,
+            position="制作交接 → " + (rid or text.split("：", 1)[0]), location="productionBrief" + ("." + rid if rid else ""),
+            fix="在制作交接对应项补充资料、关联素材或记录实际核验结果")
+    add("game_integration_pending", "info", "identity",
+        "游戏接入待完成：角色与技能数据、平台纹理、存档兼容及真机验收由制作方确认",
+        position="身份与设定 → 游戏接入", location="identity",
+        fix="由制作方完成游戏接入与目标设备验收；离线候选和预览不等于已发布")
     brief = p.get("productionBrief") or default_production_brief()
-    return {"issues": issues, "assets": len(p["assets"]), "animations": len(p["animations"]), "effects": len(p["effects"]),
+    return {"issues": issues, "assets": len(p.get("assets", {})), "animations": len(p.get("animations") or []),
+            "effects": len(p.get("effects") or []), "voices": len(p.get("voices") or []),
             "production": {"status": brief["workflow"]["status"], "resources": len(brief["resources"]), "voices": len(brief["voices"])},
-            "gameReady": False}
+            "readiness": readiness(issues, declarations["declarations"]), "draft": True, "gameReady": False}

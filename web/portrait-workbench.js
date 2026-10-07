@@ -30,6 +30,7 @@ function renderPortraits(){
   $('#portrait-export').onclick=()=>busy('导出当前用途图片',async()=>{await saveNow();location.href=`/api/portrait?id=${S.p.id}&form=${S.form}&slot=${S.slot}&download=1`;});
   $('#portrait-readback').onclick=()=>busy('查看实际输出',async()=>{await saveNow();showImageDetail({url:`/api/portrait?id=${S.p.id}&form=${S.form}&slot=${S.slot}`,download:`/api/portrait?id=${S.p.id}&form=${S.form}&slot=${S.slot}&download=1`,name:slots[S.slot][0],width:w,height:h});});
   $('#image-library').onclick=()=>openImageLibrary();$('#ui-atlas').onclick=()=>openAtlas('ui');
+  if(typeof authorUiRow==='function'&&S.slot!=='full_shot'){const pane=document.createElement('div');pane.className='author-inline-ui';pane.innerHTML=authorUiRow(S.form,S.slot);$('.portrait-inspector .inspector-body').append(pane);wireAuthorDeclarations(pane);}
   if(cropping){for(const [id,key] of [['crop-left','x'],['crop-top','y'],['crop-width','width'],['crop-height','height']])$('#'+id).onchange=e=>{const v=Number(e.target.value);if(!Number.isFinite(v)||(key==='x'||key==='y'?Math.abs(v)>32768:v<.1||v>65536)){e.target.value=spec.rect[key];return toast('请填写有效的像素坐标或尺寸',true);}const next=portraitSelection();next.rect[key]=v;if(key==='width')next.rect.height=v*next.height/next.width;if(key==='height')next.rect.width=v*next.width/next.height;mutate(()=>putPortrait(next),false);refreshCropInputs();};
     $('#crop-mask').onchange=e=>mutate(()=>putPortrait({...portraitSelection(),mask:e.target.value}),false);$('#crop-fit').onclick=()=>editPortraitSource(spec.asset);bindCropCanvas();
   }

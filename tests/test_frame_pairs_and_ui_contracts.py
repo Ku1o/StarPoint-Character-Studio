@@ -77,49 +77,57 @@ class FramePairTests(unittest.TestCase):
         self.assertIsNone(offset)
         self.assertGreater(matches, 1)
 
-    def test_base_state_swaps_to_plain_and_skill_state_keeps_composite(self):
+    def test_base_composite_requires_artist_confirmation_not_auto_replacement(self):
+        with self.assertRaisesRegex(StudioError, "基础状态合成帧"):
+            plan_pixel_frames(self.store, self.p, self.p["animations"], "normal")
+        self.p["animations"][0].update(includesCompanion=True, companionNote="基础状态常驻召唤物")
         plan, report = plan_pixel_frames(self.store, self.p, self.p["animations"], "normal")
-        self.assertIn(("a1", 0), plan)
-        asset_id, dx, dy = plan[("a1", 0)]
-        self.assertEqual(self.plain_aid, asset_id)
-        self.assertEqual((12, 12), (dx, dy))
-        # 技能状态：clip 引用纯本体 -> 切到合成帧并反向补偿
-        self.assertIn(("a2", 0), plan)
-        asset_id, dx, dy = plan[("a2", 0)]
-        self.assertEqual(self.composite_aid, asset_id)
-        self.assertEqual((-12, -12), (dx, dy))
-        self.assertEqual(2, len(report["swaps"]))
+        self.assertEqual({}, plan)
+        self.assertEqual([], report["swaps"])
+        self.assertEqual([{"slot": "neutral", "clip": 0}], report["kept"])
+        # The skill-ready clip stays plain even though its _sp counterpart exists.
+        self.assertEqual(self.plain_aid, self.p["animations"][1]["clips"][0]["asset"])
 
-    def test_compiled_atlas_uses_client_semantics(self):
+    def test_compiled_atlas_uses_client_semantics_without_silent_swaps(self):
+        self.p["animations"][0].update(includesCompanion=True, companionNote="基础状态常驻召唤物")
         files, sequences, report = compile_pixelart_with_report(
             self.store, self.p, self.p["animations"], "normal", "pair_test")
         atlas = AMF3Reader(zlib.decompress(next(
             v for k, v in files.items() if k.endswith(".atlas.amf3.deflate")), -15)).read_value()
         by_end = {int(re.search(r"(\d+)$", record["n"]).group(1)): record
                   for record in atlas}
-        # 客户端语义：区域左上角 = (-fx,-fy)，画布原点 = frame.x/y = -128。
-        # a1: 合成帧 x=-6 -> 纯本体画在 (-6+12, -12+12)=(6,0)
-        self.assertEqual((6, 0), (-by_end[4]["fx"] - 128, -by_end[4]["fy"] - 128))
-        # a2: 纯本体 x=-6 -> 合成帧画在 (-6-12, -12-12)=(-18,-24)
-        self.assertEqual((-18, -24), (-by_end[8]["fx"] - 128, -by_end[8]["fy"] - 128))
-        receipts = [item for item in report["slots"] if item["slot"] == "skill_ready"]
-        self.assertEqual(1, receipts[0]["swapped"])
+        # Client position = (-fx,-fy) + frame.x/y; neither trim nor a sibling
+        # filename may change the actual author-selected source or coordinates.
+        for end in (4, 8):
+            self.assertEqual((-6, -12), (-by_end[end]["fx"] - 128, -by_end[end]["fy"] - 128))
+        self.assertEqual((37, 25), (by_end[4]["w"], by_end[4]["h"]))
+        self.assertEqual((13, 13), (by_end[8]["w"], by_end[8]["h"]))
+        self.assertEqual([], report["swaps"])
 
-    def test_unverifiable_pair_keeps_base_state_fail_closed(self):
-        # 合成帧与纯本体没有任何包含关系 -> 基础状态必须失败关闭
+    def test_composite_without_plain_counterpart_is_still_guarded(self):
         other = frame((1, 2, 3, 255), (13, 13))
         aid = self.store.add_asset(self.p, "neutral_002_sp.png", png_bytes(other), "pixel")
-        self.store.add_asset(self.p, "neutral_002.png",
-                             png_bytes(frame((9, 9, 9, 255), (13, 13))), "pixel")
         self.p["animations"][0]["clips"][0]["asset"] = aid
-        self.store._write(self.p)
-        with self.assertRaisesRegex(StudioError, "无法证明"):
+        with self.assertRaisesRegex(StudioError, "基础状态合成帧"):
             plan_pixel_frames(self.store, self.p, self.p["animations"], "normal")
 
-    def test_transformed_base_clip_is_rejected(self):
+    def test_confirmed_transformed_composite_stays_selected(self):
+        self.p["animations"][0].update(includesCompanion=True, companionNote="全程常驻")
         self.p["animations"][0]["clips"][0]["flip"] = True
-        self.store._write(self.p)
-        with self.assertRaisesRegex(StudioError, "翻转"):
+        plan, report = plan_pixel_frames(self.store, self.p, self.p["animations"], "normal")
+        self.assertEqual({}, plan)
+        self.assertEqual([], report["problems"])
+
+    def test_explicit_no_companion_cannot_compile_composite_in_skill_slot(self):
+        self.p["animations"] = [self.p["animations"][1]]
+        self.p["animations"][0].update(includesCompanion=False)
+        self.p["animations"][0]["clips"][0]["asset"] = self.composite_aid
+        with self.assertRaisesRegex(StudioError, "声明为不包含"):
+            plan_pixel_frames(self.store, self.p, self.p["animations"], "normal")
+
+    def test_true_without_note_does_not_bypass_base_guard(self):
+        self.p["animations"][0]["includesCompanion"] = True
+        with self.assertRaisesRegex(StudioError, "出现时机"):
             plan_pixel_frames(self.store, self.p, self.p["animations"], "normal")
 
     def test_pixelart_timeline_template_is_deepcopied_and_checked(self):

@@ -70,7 +70,44 @@ function draw(){const canvas=$('#stage');if(!canvas||!S.p)return;const rect=canv
 window.addEventListener('resize',draw);
 function renderScene(){renderSkillWorkspace();}
 function renderTrack(){renderSkillTrack();}
-async function renderChecks(){const id=S.p.id;$('#content').innerHTML=header('检查与交付','让接收者知道做了什么、还有什么需要完成。')+'<div class="empty">检查工程中…</div>';try{await saveNow();const r=await api('/api/check',{id});if(!S.p||S.p.id!==id||S.page!=='checks')return;$('#content').innerHTML=header('检查与交付','源素材、创作工程和离线编译产物分别交接。')+`<div class="summary-row"><span><b>${r.assets}</b>素材</span><span><b>${r.animations}</b>动作</span><span><b>${r.effects}</b>特效</span></div>${r.issues.map((i,n)=>`<button class="issue ${i.level}" data-issue="${n}"><span>${i.level==='todo'?'待补':i.level==='warning'?'待校准':'接入'}</span><strong>${esc(i.text)}</strong><small>查看 →</small></button>`).join('')}<div class="export-options"><section class="export-card"><h3>可编辑工程</h3><p>包含源素材、动作、裁切、技能编排、能力设计和模板依据。接收者可以在工坊继续编辑。</p><button id="export-source" class="primary">导出工程</button></section><section class="export-card"><h3>离线美术编译</h3><p>生成美术资源并回读，同时附上 MOD 角色接入契约，保留技能脚本来源、能力设计和资源映射。</p><button id="compile-assets">编译并检查</button></section></div><p class="footer-note">导出创作工程不要求所有素材完稿。编译检查与游戏内验收分别记录。</p>`;$$('[data-issue]').forEach(b=>b.onclick=()=>{const i=r.issues[Number(b.dataset.issue)];S.page=i.page;S.selected=i.id||null;render();});$('#export-source').onclick=()=>$('#export').click();$('#compile-assets').onclick=()=>busy('编译并回读美术资源',async()=>{await saveNow();const report=await api('/api/compile',{id:S.p.id});modal(`<h2>离线编译完成</h2><p>${report.files.length} 个资源已生成并回读。以下项目仍需游戏接入：</p><div class="notice">${report.pending.map(esc).join('<br>')}</div><div class="modal-actions"><a href="/api/compile-export?id=${S.p.id}" download>下载编译产物</a></div>`);});}catch(e){toast(e.message,true);$('#content').innerHTML=header('检查与交付','工程需要先解决以下问题。')+`<div class="notice">${esc(e.message)}</div>`;}}
+function checkIssueLabel(issue){return issue.blocking?'需先修正':issue.level==='todo'?'待补说明':issue.level==='warning'?'需核对':'提示';}
+function checkIssueButton(issue,index){
+  const structured=!!issue.summary;
+  return `<button class="issue ${esc(issue.level)} ${issue.blocking?'blocking':''}" data-issue="${index}"><span>${checkIssueLabel(issue)}</span><div><strong>${esc(issue.summary||issue.text)}</strong>${structured&&issue.position?`<p>位置：${esc(issue.position)}</p>`:''}${structured&&issue.fix?`<p class="check-fix">怎么改：${esc(issue.fix)}</p>`:''}</div><small>去处理 →</small></button>`;
+}
+async function renderChecks(){
+  const id=S.p.id;
+  $('#content').innerHTML=header('检查与交付','先确认素材和用途，再选择导出草稿或编译候选。')+'<div class="empty">检查工程中…</div>';
+  try{
+    await saveNow();
+    const r=await api('/api/check',{id});
+    if(!S.p||S.p.id!==id||S.page!=='checks')return;
+    const readiness=r.readiness||{}, counts=readiness.declarations||{};
+    const blockers=r.issues.filter(i=>i.blocking), declarations=r.issues.filter(i=>i.declaration&&!i.blocking), other=r.issues.filter(i=>!i.declaration&&!i.blocking);
+    const canCompile=readiness.canCompile!==false&&!blockers.length;
+    const group=(title,items,expanded=true)=>items.length?`<details class="check-group" ${expanded?'open':''}><summary>${esc(title)} <span>${items.length}</span></summary>${items.map(i=>checkIssueButton(i,r.issues.indexOf(i))).join('')}</details>`:'';
+    $('#content').innerHTML=header('检查与交付','文件能打开，不代表用途正确；离线编译通过，也不代表游戏已验收。','<button id="refresh-checks">重新检查</button>')+
+      `<section class="readiness-card ${canCompile?'review':'blocked'}" aria-label="提交就绪度"><div><span class="eyebrow">提交就绪度</span><h3>${!canCompile?'有问题需先修正':readiness.status==='ready'?'当前检查无待补项':'仍有说明或素材待核对'}</h3><p>${!canCompile?'先处理下方红色问题，再生成离线编译候选。草稿仍可保存和交接。':'可继续制作或导出草稿；交接前请逐条确认待补项。'}</p></div><div class="readiness-counts"><span><b>${r.assets}</b>源素材</span><span><b>${r.animations}</b>像素动作</span><span><b>${counts.complete??0}/${counts.total??0}</b>适用声明已完成</span><span><b>${blockers.length}</b>编译阻断</span></div></section>`+
+      '<div id="author-declarations-mount"></div>'+
+      group('需先修正 · 不会阻止保存草稿',blockers)+group('来源与用途 · 请美术补充确认',declarations)+group('素材、制作与接入检查',other,false)+
+      `<div class="export-options"><section class="export-card"><h3>可编辑草稿工程</h3><p>保留源素材、编辑状态和作者说明；随包附检查报告与稿主必读。未完成项不会被标成已合规。</p><button id="export-source" class="primary">导出工程与检查报告</button></section><section class="export-card"><h3>离线美术编译候选</h3><p>按当前选定素材生成资源并回读。通过后仍需制作方完成游戏接入、平台绑定与实机验收。</p><button id="compile-assets" ${canCompile?'':'disabled'}>${canCompile?'编译并检查':'先修正阻断项'}</button></section></div><p class="footer-note">文件名只能辅助识别。工坊无法代替作者确认画面内容、声音授权与设计意图。</p>`;
+    if(typeof renderAuthorDeclarations==='function')renderAuthorDeclarations($('#author-declarations-mount'));
+    $('#refresh-checks').onclick=()=>renderChecks();
+    $$('[data-issue]').forEach(button=>button.onclick=()=>{
+      const issue=r.issues[Number(button.dataset.issue)];
+      if(issue.declaration&&typeof openAuthorDeclarationIssue==='function'){openAuthorDeclarationIssue(issue);return;}
+      if(issue.form)S.form=issue.form;
+      if(issue.slot&&issue.page==='portraits')S.slot=issue.slot;
+      S.page=issue.page;S.selected=issue.id||null;render();
+    });
+    $('#export-source').onclick=()=>$('#export').click();
+    $('#compile-assets').onclick=()=>busy('编译并回读美术资源',async()=>{
+      await saveNow();const report=await api('/api/compile',{id:S.p.id});
+      const openIssues=(report.checks?.issues||[]).filter(i=>i.level!=='info');
+      modal(`<h2>离线编译完成 · 非游戏验收</h2><p>${report.files.length} 个资源已生成并回读。${openIssues.length?`仍有 ${openIssues.length} 项待补或核对，已写入包内报告。`:''}</p><div class="notice">${report.pending.map(esc).join('<br>')}</div><div class="modal-actions"><a href="/api/compile-export?id=${encodeURIComponent(S.p.id)}" download>下载编译候选与检查报告</a></div>`);
+    });
+  }catch(e){toast(e.message,true);if(S.p?.id===id&&S.page==='checks')$('#content').innerHTML=header('检查与交付','工程需要先解决以下问题。')+`<div class="notice">${esc(e.message)}</div>`;}
+}
 (async()=>{try{const session=await api('/api/session');S.token=session.token;S.rules=session.rules;S.host=session.host;initStudioAbout(session);recent(session.projects);}catch(e){toast('工具连接失败：'+e.message,true);}})();
 
 $("#shutdown").onclick=()=>busy("保存并退出工具",async()=>{await saveNow();await api("/api/shutdown",{});document.body.innerHTML="<div class=\"welcome\"><h1>工程已保存。</h1><p>工具已退出，可以关闭此页面。</p></div>";});
