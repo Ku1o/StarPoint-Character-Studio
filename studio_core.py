@@ -648,6 +648,8 @@ def validate(p):
     validate_declarations(p)
     from project_storage import check_format
     check_format(p)
+    from spatial_preview import validate_preview_stage
+    validate_preview_stage(p)
     from native_gameplay import validate_native
     validate_native(p.get("nativeGameplay"))
     if p.get("schema") != "starpoint-character-studio-v1":

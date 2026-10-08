@@ -16,3 +16,24 @@
 .author-library-source{display:block!important;font-size:10px!important;margin-top:5px;color:#d3ba85!important;white-space:normal;overflow-wrap:anywhere}
 @media(max-width:1050px){.author-group-body{grid-template-columns:1fr}}
 @media(max-width:760px){.author-declarations{padding:12px 0}.author-declaration-row{padding:12px}.author-two-fields{grid-template-columns:1fr;gap:0}.author-panel-head>button{font-size:11px}}
+
+/* Keep drawing visible first; native details preserve field nodes while folded. */
+.author-animation-card{margin-bottom:12px}
+.author-inline-disclosure,.author-inspector-disclosure{min-width:0;border:1px solid var(--line);border-radius:8px;background:var(--panel)}
+.author-inline-disclosure>summary,.author-inspector-disclosure>summary{cursor:pointer;padding:10px 12px;font-size:12px;line-height:1.6;overflow-wrap:anywhere}
+.author-inline-disclosure>summary strong,.author-inspector-disclosure>summary strong{font-size:12px}
+.author-inline-disclosure>summary .author-source{margin-left:10px;display:inline-block}
+.author-inline-status{margin-left:10px;color:var(--muted);font-size:11px}
+.author-disclosure-action{margin-left:12px;color:var(--accent);font-size:11px;white-space:nowrap}
+.author-inline-disclosure[open]>summary,.author-inspector-disclosure[open]>summary{border-bottom:1px solid var(--line)}
+.author-inline-disclosure>.author-declaration-row{border:0;border-radius:0;background:transparent}
+.author-inspector-disclosure{margin-top:16px}
+.author-inspector-disclosure>summary .author-inline-status{display:block;margin-left:0}
+.author-inspector-disclosure>.field,.author-inspector-disclosure>h3{margin-left:12px;margin-right:12px}
+.author-inspector-disclosure>.field:last-child{margin-bottom:12px}
+.author-inspector-disclosure>hr{display:none}
+.author-inline-disclosure>summary:focus-visible,.author-inspector-disclosure>summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+@media(max-width:760px){.author-inline-disclosure>summary .author-source,.author-inline-disclosure>summary .author-inline-status{margin-left:6px}}
+
+.author-inline-disclosure[open]>summary .author-disclosure-action,.author-inspector-disclosure[open]>summary .author-disclosure-action{font-size:0}
+.author-inline-disclosure[open]>summary .author-disclosure-action::after,.author-inspector-disclosure[open]>summary .author-disclosure-action::after{content:"收起说明";font-size:11px}

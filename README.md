@@ -2,13 +2,17 @@
 
 面向角色创作者的 Windows 本地工作台：从官方参考模板或原创工程开始，制作立绘、界面图片、像素动作、技能特效、声音与能力草稿。
 
-**当前源码版本：0.7.3 预览版。** 工具基于 [kuronzzhan-droid/startpoint-cn-mod-tools（原 MOD 修改器）](https://github.com/kuronzzhan-droid/startpoint-cn-mod-tools) 开发，复用并扩展资源编码、动画预览和能力编辑实现。源码采用 GPLv3，见 [来源声明](NOTICE.md) 和 [LICENSE](LICENSE)。
+**当前源码版本：0.8.0 预览版。** 工具基于 [kuronzzhan-droid/startpoint-cn-mod-tools（原 MOD 修改器）](https://github.com/kuronzzhan-droid/startpoint-cn-mod-tools) 开发，复用并扩展资源编码、动画预览和能力编辑实现。源码采用 GPLv3，见 [来源声明](NOTICE.md) 和 [LICENSE](LICENSE)。
 
 [下载 Windows 版](https://github.com/Ku1o/StarPoint-Character-Studio/releases) · [完整使用说明](docs/USER_GUIDE.md) · [新角色生产流程](docs/PRODUCTION-WORKFLOW.md) · [更新记录](CHANGELOG.md) · [反馈问题](https://github.com/Ku1o/StarPoint-Character-Studio/issues)
 
-## 0.7.3 预览版：作者填写与制作交接
+## 0.8.0 预览版：场地定位与稿主交接
 
-当前源码新增「工程与升级」入口：在旧版保存并退出后，将新版解压到新目录，选择旧版目录迁入。完整复制工程、素材和历史，原目录保留，编号冲突另建副本。保存前自动保留原始记录，恢复历史也会另建副本；不支持的格式不会写回。官方资源库仍独立保留，可继续使用已下载的资源。详见 [使用说明](docs/USER_GUIDE.md#常见问题)。v0.7.2 已加入这些入口，v0.7.3 继续保留旧工程迁入和数据保护；v0.7.1 用户升级时仍需手动复制完整 `projects/`。
+- **像素小人**：查看原图尺寸、可见范围和显示倍率，点选脚底/中心锚点，拖动或用方向键定位。
+- **技能特效**：按参考关卡的实际场地比例摆放，可快速放到角色点、目标点或场中央。
+- **预览与交接**：场地设置随工程保存，编译后预览共用坐标视图，可导出定位参考 PNG；声明入口更紧凑。
+
+旧工程可继续迁入，原目录保留，官方资源无需重下。详见 [使用说明](docs/USER_GUIDE.md) 与 [场地定位说明](docs/SPATIAL-PREVIEW.md)。场地预览不代替真实游戏验收。
 
 ## 解压后使用
 
@@ -29,7 +33,7 @@ Git 源码与工具 ZIP **不包含官方角色资源或个人工程**；官方�
 
 | 下载项 | 说明 |
 | --- | --- |
-| [Windows 工具 ZIP](https://github.com/Ku1o/StarPoint-Character-Studio/releases/download/v0.7.3/StarPoint-Character-Studio-0.7.3-Windows.zip) | 先完整解压，双击 EXE 使用 |
+| [Windows 工具 ZIP](https://github.com/Ku1o/StarPoint-Character-Studio/releases/download/v0.8.0/StarPoint-Character-Studio-0.8.0-Windows.zip) | 先完整解压，双击 EXE 使用 |
 | [角色资源 1/2](https://github.com/Ku1o/StarPoint-Character-Studio/releases/download/v0.7.1/StarPoint-CN-Character-Resources-1.4.54-r3-1of2.zip) | 与 2/2 都要下载，内容解压到工具目录 |
 | [角色资源 2/2](https://github.com/Ku1o/StarPoint-Character-Studio/releases/download/v0.7.1/StarPoint-CN-Character-Resources-1.4.54-r3-2of2.zip) | 与 1/2 都要下载，内容解压到同一个工具目录 |
 
@@ -46,7 +50,7 @@ Git 源码与工具 ZIP **不包含官方角色资源或个人工程**；官方�
   projects/        自动建立的个人创作工程
 ```
 
-已安装完整 `StarPoint-CN-Character-Resources-1.4.54-r3.zip` 的用户无需重新下载；v0.7.3 沿用 v0.7.1 Release 中的两卷资源附件，不重复上传相同资源。该配套版本覆盖国服 1.4.54 的 505 个角色及特殊条目，资源缺项和预览限制会在模板中分别显示。模板新建后复制为独立工程，后续编辑不会修改模板库。
+已安装完整 `StarPoint-CN-Character-Resources-1.4.54-r3.zip` 的用户无需重新下载；v0.8.0 沿用 v0.7.1 Release 中的两卷资源附件，不重复上传相同资源。该配套版本覆盖国服 1.4.54 的 505 个角色及特殊条目，资源缺项和预览限制会在模板中分别显示。模板新建后复制为独立工程，后续编辑不会修改模板库。
 
 页面下方的 `Source code (zip / tar.gz)` 是 GitHub 自动提供的源码；直接使用 Windows 工具无需下载它们，也无需单独下载校验文件。
 
@@ -64,7 +68,7 @@ Git 源码与工具 ZIP **不包含官方角色资源或个人工程**；官方�
 
 导入格式、尺寸、帧数和声音要求请看 [素材准备](docs/USER_GUIDE.md#美术素材如何准备)。
 
-源码新增稿主交付流程（尚未发布 Windows 成品）：在「检查与交付」集中补齐素材用途声明，查看可定位的阻断/待补项，再导出附检查报告的草稿工程或离线编译候选。编译严格使用所选画稿，不按文件名自动换图；详见 [稿主交付自检](docs/USER_GUIDE.md#稿主交付自检)。
+稿主交付流程：在「检查与交付」集中补齐素材用途声明，查看可定位的阻断/待补项，再导出附检查报告的草稿工程或离线编译候选。编译严格使用所选画稿，不按文件名自动换图；详见 [稿主交付自检](docs/USER_GUIDE.md#稿主交付自检)。
 
 ## 当前边界
 

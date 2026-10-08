@@ -32,8 +32,18 @@ function authorTriField(kind,key,field,label,value,yes,no){
   if(selected==='__invalid__')options.unshift(['__invalid__','旧值需确认：'+String(value)]);
   return authorField(kind,key,field,label,selected,{options});
 }
+function authorInlineStatus(item,kind){
+  if(kind==='effect')return authorMarked(item?.origin)?'已填写来源 · 仍需检查':'来源未标注';
+  const flag=authorTri(item?.includesCompanion);
+  return flag==='true'?'带附属物 · 请核对出现时机':flag==='false'?'仅角色本体 · 请核对画稿':'附属物未标注';
+}
 function authorRow(kind,key,title,body,extra=''){
-  return `<section class="author-declaration-row" data-author-kind="${esc(kind)}" data-author-key="${esc(key)}" tabindex="-1"><div class="author-row-head"><h4>${esc(title)}</h4>${extra}</div>${body}</section>`;
+  const row=`<section class="author-declaration-row" data-author-kind="${esc(kind)}" data-author-key="${esc(key)}" tabindex="-1"><div class="author-row-head"><h4>${esc(title)}</h4>${extra}</div>${body}</section>`;
+  // Only the inline editor card is compact; the check-page rows keep their hooks.
+  const inline=(kind==='animation'&&S.page==='animations')||(kind==='effect'&&S.page==='effects');
+  if(!inline)return row;
+  const item=S.p[kind==='animation'?'animations':'effects']?.find(a=>a.id===key);
+  return `<details class="author-inline-disclosure" data-author-disclosure="${esc(kind)}" data-author-disclosure-key="${esc(key)}"><summary><strong>来源与用途说明 · ${esc(title)}</strong>${extra}<span class="author-inline-status">${esc(authorInlineStatus(item,kind))}</span><span class="author-disclosure-action">展开编辑</span></summary>${row}</details>`;
 }
 function authorAnimationSource(anim){
   const counts={plain:0,composite:0,unknown:0};let inferred=0;
@@ -220,3 +230,57 @@ function focusAuthorDeclaration(issue,container=$('#author-declarations-mount')|
   const input=[...row.querySelectorAll('[data-author-field]')].find(e=>e.dataset.authorField===target.field)||row.querySelector('[data-author-field]');(input||row).focus({preventScroll:true});return true;
 }
 function openAuthorDeclarationIssue(issue){const container=$('#author-declarations-mount');if(!container)return false;if(!container.querySelector('.author-declarations'))renderAuthorDeclarations(container);return focusAuthorDeclaration(issue,container);}
+
+
+// Fold the legacy inspector fields without replacing nodes or their handlers.
+// The earlier editor-scroll hook has already installed its inspector wrapper.
+// Source classification and HTML rendering also run in a DOM-free VM.
+// Install browser-only behavior only when a browser document exists.
+if(typeof document!=='undefined'&&typeof document.addEventListener==='function')document.addEventListener('DOMContentLoaded',()=>{
+  if(typeof renderInspector==='function'){
+    const previous=renderInspector;
+    renderInspector=function(anim){
+      previous(anim);
+      const panel=$('#inspector');
+      if(!panel||!anim||anim.native||!['animations','effects'].includes(S.page))return;
+      const start=[...panel.children].find(e=>e.tagName==='H3'&&e.textContent==='来源与声明');
+      if(!start)return;
+      const kind=S.page==='animations'?'animation':'effect',details=document.createElement('details'),summary=document.createElement('summary');
+      details.className='author-inspector-disclosure';details.dataset.authorDisclosure=kind;details.dataset.authorDisclosureKey=anim.id;
+      const label=document.createElement('strong'),status=document.createElement('span'),action=document.createElement('span');
+      label.textContent='来源与用途说明';status.className='author-inline-status';status.textContent=authorInlineStatus(anim,kind);
+      action.className='author-disclosure-action';action.textContent='展开编辑';summary.append(label,status,action);details.append(summary);
+      const divider=start.previousElementSibling;
+      start.before(details);if(divider?.matches('hr.divider'))details.append(divider);
+      let node=start;while(node){const next=node.nextSibling;details.append(node);node=next;}
+    };
+  }
+  // Both editor entrances write the same project fields. Mirror only the changed
+  // field, never rerender/copy an entire form: unrelated in-progress input survives.
+  document.addEventListener('change',event=>{
+    const input=event.target;if(!input?.matches('input,select,textarea')||!S.p)return;
+    const legacy={
+      'decl-purpose':['animation','purpose'], 'decl-companion':['animation','includesCompanion'],
+      'decl-companion-note':['animation','companionNote'], 'decl-origin':['effect','origin'],
+      'decl-origin-note':['effect','originNote']
+    };
+    const row=input.closest('[data-author-kind]'),mapped=legacy[input.id];
+    const kind=row?.dataset.authorKind||mapped?.[0],field=input.dataset.authorField||mapped?.[1];
+    const key=row?.dataset.authorKey||(mapped?current()?.id:null);
+    if(!['animation','effect'].includes(kind)||!key||!field||input.value==='__invalid__')return;
+    const item=S.p[kind==='animation'?'animations':'effects']?.find(a=>a.id===key);if(!item)return;
+    for(const peer of document.querySelectorAll('[data-author-field]')){
+      const peerRow=peer.closest('[data-author-kind]');
+      if(peer!==input&&peerRow?.dataset.authorKind===kind&&peerRow.dataset.authorKey===key&&peer.dataset.authorField===field)
+        peer.value=field==='includesCompanion'?authorTri(item[field]):authorText(item[field]);
+    }
+    if(current()?.id===key)for(const [id,[peerKind,peerField]] of Object.entries(legacy)){
+      const peer=document.getElementById(id);if(peer&&peer!==input&&peerKind===kind&&peerField===field)
+        peer.value=field==='includesCompanion'?(item[field]===true?'yes':item[field]===false?'no':''):authorText(item[field]);
+    }
+    for(const disclosure of document.querySelectorAll('[data-author-disclosure]')){
+      if(disclosure.dataset.authorDisclosure===kind&&disclosure.dataset.authorDisclosureKey===key)
+        disclosure.querySelector('.author-inline-status').textContent=authorInlineStatus(item,kind);
+    }
+  });
+});
