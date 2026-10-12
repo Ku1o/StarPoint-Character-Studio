@@ -12,6 +12,7 @@ from pathlib import PurePosixPath
 
 from action_presets import ACTION_PRESETS, preset_animation
 from asset_rules import FILE_BYTES, PIXEL_EDGE
+from source_intake import register_source, record_derivative, verify_source_bytes
 
 MAX_FILES = 256
 MAX_FRAMES = 512
@@ -144,7 +145,7 @@ def source_identity(name):
 
 
 def import_images(store, pid, request):
-    from studio_core import StudioError, integer, image_from, png_bytes, validate, BASE_STATE_SLOTS
+    from studio_core import StudioError, integer, image_from, png_bytes, validate_draft, BASE_STATE_SLOTS
     from project_storage import safe_child, write_bytes
     with store.lock:
         old = store.load(pid)
@@ -165,6 +166,7 @@ def import_images(store, pid, request):
         if mode not in ("append", "replace") or alignment not in ("feet", "center"):
             raise StudioError("导入方式或对齐方式无效")
         pending, names, total_bytes, pixels, new_targets, excluded = [], set(), 0, 0, {}, 0
+        originals = {}
         targets = {a["id"]: a for a in p["animations"]}
         known = {s["slot"]: s for s in ACTION_PRESETS}
         reviewed = [(item, source_identity(item.get("path") or item.get("name"))) for item in files]
@@ -193,6 +195,13 @@ def import_images(store, pid, request):
             if total_bytes > MAX_BATCH_BYTES:
                 raise StudioError("本次图片总量超过 128 MiB，请分批导入")
             image = image_from(raw)
+            source = next((s for s in p.get("sourceIntake", {}).get("sources", [])
+                           if item.get("package") is None and s["path"] == path.as_posix()
+                           and s["sha256"] == hashlib.sha256(raw).hexdigest()), None)
+            if source is None:
+                source = register_source(p, path.as_posix(), raw, item.get("package"),
+                                         {"canvas": [image.width, image.height]})
+            originals[source["blob"]] = (source, raw)
             pixels += image.width * image.height
             if pixels > MAX_BATCH_PIXELS:
                 raise StudioError("本次图片总像素超过 3200 万，请分批导入")
@@ -250,9 +259,19 @@ def import_images(store, pid, request):
                             "file": digest[:24] + "_png.png", "sha256": digest, "size": len(payload), **evidence}
                 # Same bytes from a different directory/variant get independent references.
                 # This never overwrites the metadata of an existing author-selected asset.
-                if aid in p["assets"] and p["assets"][aid] != metadata:
+                if aid in p["assets"] and any(p["assets"][aid].get(key) != value for key, value in metadata.items()):
                     raise StudioError("素材来源标识冲突，请重新选择；原素材未覆盖")
                 p["assets"].setdefault(aid, metadata)
+                source_ref = {"source": source["id"], "cell": (settings.get("start", 0) + index) if settings is not None else None,
+                              "rect": [x, y, w, h], "mask": item.get("mask"),
+                              "transform": {"operation": "crop" if settings is not None else "normalize_png",
+                                            "grid": copy.deepcopy(settings), "sourceVariant": variant,
+                                            "alignment": alignment, "x": -w / 2,
+                                            "y": -h if alignment == "feet" else -h / 2,
+                                            "flip": False, "rotation": 0, "scale": 1, "opacity": 1}}
+                record_derivative(p, aid, source["id"], cell=source_ref["cell"], rect=source_ref["rect"],
+                                  mask=source_ref["mask"], transform=source_ref["transform"])
+                evidence["sourceRef"] = source_ref
                 pair_key = (info["pairKey"], (x, y, w, h) if settings is not None else None)
                 pending.append({"target": target, "aid": aid, "payload": payload, "meta": metadata, "pairKey": pair_key, "evidence": evidence})
                 if len(pending) > MAX_FRAMES:
@@ -279,7 +298,7 @@ def import_images(store, pid, request):
                                        "y": -meta["height"] if alignment == "feet" else -meta["height"] / 2,
                                        "flip": False, "rotation": 0, "scale": 1, "opacity": 1, **row["evidence"]})
         p["pixelInbox"] = inbox
-        validate(p)
+        validate_draft(p)
         p["revision"] += 1
         p["updated"] = time.time()
         directory = store.directory(pid)
@@ -287,6 +306,15 @@ def import_images(store, pid, request):
         asset_dir.mkdir(exist_ok=True)
         created = []
         try:
+            for record, raw in originals.values():
+                verify_source_bytes(record, raw)
+                path = safe_child(directory, record["blob"])
+                path.parent.mkdir(parents=True, exist_ok=True)
+                if path.exists():
+                    verify_source_bytes(record, path.read_bytes())
+                else:
+                    created.append(path)
+                    write_bytes(path, raw, "xb")
             for row in pending:
                 path = safe_child(directory, "assets/" + row["meta"]["file"])
                 if not path.exists():

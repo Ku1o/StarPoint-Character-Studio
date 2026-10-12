@@ -73,7 +73,7 @@ class DefinitionLibrary:
             self.cache=None
         return self.catalog()
 
-def validate_pack(pack):
+def validate_pack(pack, *, draft=False):
     if not isinstance(pack,dict) or pack.get('schema')!=PACK_SCHEMA:raise ValueError('角色定义包版本不支持')
     chars=pack.get('characters')
     if not isinstance(chars,dict) or len(chars)>2000:raise ValueError('角色定义目录无效')
@@ -83,17 +83,19 @@ def validate_pack(pack):
         rows=selection.get('rows',[])
         if not rows or len(rows[0])<37 or rows[0][0]!=c.get('code'):raise ValueError('角色行与资源代号不一致：'+key)
     for kind in ('ability','leader_ability'):
-        _validate_row(pack.get('blankRows',{}).get(kind),kind)
+        _validate_row(pack.get('blankRows',{}).get(kind),kind,draft=draft)
 
-def _validate_row(row,kind,unchanged_source=False):
+def _validate_row(row,kind,unchanged_source=False, *, draft=False):
     width=int(describe.layout(kind)['ncols'])
     if not isinstance(row,list) or not width<=len(row)<=256:raise ValueError('能力行列数无效')
     if any(not isinstance(v,str) or len(v)>4000 or any(c in v for c in '\r\n"') for v in row):raise ValueError('能力单元格包含无效内容')
+    if draft:return
     problems=client_legality_problems(kind,row)
     if problems and not unchanged_source:raise ValueError('；'.join(problems[:5]))
     if kind=='ability' and row[1] not in ('true','false'):raise ValueError('主位限定必须使用 true/false')
 
-def validate_native(value):
+def validate_native(value, *, draft=False):
+    """Draft validation preserves bounded source data; readiness stays strict."""
     if value is None:return
     if not isinstance(value,dict) or value.get('schema')!=SCHEMA:raise ValueError('MOD 角色数据版本不支持')
     source=value.get('source',{})
@@ -101,7 +103,7 @@ def validate_native(value):
     data=source.get('data')
     if not isinstance(data,dict) or not isinstance(data.get('character'),dict):raise ValueError('原始角色定义结构无效')
     original_character=data['character'];cid=original_character.get('id')
-    validate_pack({'schema':PACK_SCHEMA,'characters':{cid:original_character},'blankRows':data.get('blankRows')})
+    validate_pack({'schema':PACK_SCHEMA,'characters':{cid:original_character},'blankRows':data.get('blankRows')},draft=draft)
     cr=original_character['records']['character']['selected'][cid]['rows'][0]
     groups=value.get('abilities')
     if not isinstance(groups,list) or len(groups)!=6 or any(not isinstance(a,dict) for a in groups) or [a.get('slot') for a in groups]!=list(range(1,7)):raise ValueError('MOD 能力需要六个有序槽位')
@@ -112,8 +114,9 @@ def validate_native(value):
         if not isinstance(rs,list) or len(rs)>128:raise ValueError('单个能力槽最多 128 行')
         kind='leader_ability' if group is value['leader'] else 'ability'
         source_groups=source['data']['character']['records']['leader_ability' if kind=='leader_ability' else 'abilities']['selected']
-        original=source_groups.get(group.get('sourceKey'),{}).get('rows',[])
-        for row in rs:_validate_row(row,kind,row in original)
+        # A preserved source anomaly is still a client readiness problem. Draft
+        # transport keeps its exact cells; compilation never adopts it as valid.
+        for row in rs:_validate_row(row,kind,draft=draft)
     skills=value.get('skills')
     if not isinstance(skills,list) or len(skills)>32:raise ValueError('技能版本定义无效')
     if [s.get('inner_key') for s in skills if isinstance(s,dict)]!=[s['inner_key'] for s in original_character['records']['action_skill']['rows']]:raise ValueError('技能版本键与来源不一致')
@@ -121,9 +124,36 @@ def validate_native(value):
         fields=item.get('fields',[])
         if not isinstance(fields,list) or not 8<=len(fields)<=128 or any(not isinstance(v,str) or len(v)>16000 or '\x00' in v for v in fields):raise ValueError('技能原始行无效')
         if item.get('raw_csv') is not None and core.read_csv_lines(item['raw_csv'])!=[fields]:raise ValueError('技能文本与编辑字段不一致')
-        for index in (4,5):
-            if not fields[index].isdigit() or not 1<=int(fields[index])<=9999:raise ValueError('技能能量必须为 1 至 9999')
+        if not draft:
+            for index in (4,5):
+                if not fields[index].isdigit() or not 1<=int(fields[index])<=9999:raise ValueError('技能能量必须为 1 至 9999')
     canonical(value)
+
+def native_readiness_issues(value):
+    """Describe deferred technical work without changing the source or rows."""
+    validate_native(value,draft=True)
+    if value is None:return []
+    issues=[]
+    groups=[('leader','leader_ability',value['leader']),
+            *[(str(group['slot']),'ability',group) for group in value['abilities']]]
+    for slot,kind,group in groups:
+        for index,row in enumerate(group['rows']):
+            for message in client_legality_problems(kind,row):
+                issues.append({'code':'native_row_not_ready','owner':'maker','category':'technical_readiness',
+                               'level':'warning','page':'gameplay','path':f'nativeGameplay.{"leader" if slot=="leader" else "abilities."+str(int(slot)-1)}.rows.{index}',
+                               'text':f'制作方待处理：{"队长技" if slot=="leader" else "能力 "+slot}第 {index+1} 条：{message}',
+                               'nextStep':'保留原行与来源；由制作方核对后再编译或接入。',
+                               'blocks':['compile','native_apply'],'gameReady':False})
+    # Include source-template and skill readiness errors which are not ability
+    # row problems, while retaining the strict validator's original reason.
+    try:validate_native(value)
+    except ValueError as exc:
+        if not issues:
+            issues.append({'code':'native_not_ready','owner':'maker','category':'technical_readiness',
+                           'level':'warning','page':'gameplay','path':'nativeGameplay',
+                           'text':'制作方待处理：'+str(exc),'nextStep':'保留技术草稿；核对定义、技能能量和原始行后再编译。',
+                           'blocks':['compile','native_apply'],'gameReady':False})
+    return issues
 
 def attach(store,pid,revision,library,cid=None):
     pack=library.load()
@@ -144,7 +174,7 @@ def attach(store,pid,revision,library,cid=None):
         'leader':{'sourceKey':cr[17],'rows':selection('leader_ability',cr[17])},
         'abilities':[{'slot':i+1,'sourceKey':key,'rows':selection('abilities',key)} for i,key in enumerate(cr[19:25])],
         'skills':copy.deepcopy(records['action_skill']['rows'])}
-    validate_native(p['nativeGameplay'])
+    validate_native(p['nativeGameplay'],draft=True)
     return store.save(p)
 
 def blank_factory(native,slot):
@@ -170,9 +200,14 @@ def scaled(value,factor,label):
         return str(int(n))
     except (ValueError,InvalidOperation):raise ValueError(label+'数值超出范围或精度')
 
+def has_owner_is_main_condition(row, kind):
+    blocks = describe.layout(kind)['blocks']
+    return any(row[blocks[key]] == '202' for key in ('precondition1', 'precondition2', 'precondition3'))
+
+
 def describe_native(native):
     if not native:return {'installed':False}
-    validate_native(native)
+    validate_native(native,draft=True)
     out={'installed':True,'source':{k:native['source']['data']['character'][k] for k in ('id','code','name')},'version':native['source']['data']['version'],'groups':[],'skills':native['skills']}
     for slot in ['leader',1,2,3,4,5,6]:
         group,kind=group_for(native,slot);b=describe.layout(kind)['blocks'];entries=[]
@@ -180,7 +215,9 @@ def describe_native(native):
             mode=row[b['precondition1']-1];cb=b['instant_content'] if mode=='0' else b['during_content'] if mode=='1' else None
             effect=next((e for e in composer._FXGEN_EFFECTS if cb is not None and e[2]==('instant' if mode=='0' else 'during') and e[3]==row[cb]),None)
             unit=effect[4] if effect else 'raw';factor=composer._unit_mul(unit)
-            entries.append({'index':index,'description':describe.describe_line(row,kind),'mainOnly':kind=='ability' and row[1]=='false',
+            main_locked = kind == 'ability' and has_owner_is_main_condition(row, kind)
+            entries.append({'index':index,'description':describe.describe_line(row,kind),'mainOnly':kind=='ability' and (row[1]=='false' or main_locked),
+                'mainOnlyLocked':main_locked,
                 'issues':client_legality_problems(kind,row),
                 'mode':mode,'unit':unit,'editable':cb is not None,
                 'value':str(Decimal(row[cb+4])/factor) if cb is not None and row[cb+4].lstrip('-').isdigit() else '',
@@ -240,7 +277,12 @@ def edit(store,pid,revision,operation,slot=None,index=None,spec=None):
                 factor=composer._unit_mul(info['unit'])
                 for key,offset in (('value',4),('valueMax',5)):
                     if key in spec and spec[key]!='':row[cb+offset]=scaled(spec[key],factor,'能力强度')
-                if 'mainOnly' in spec and kind=='ability':row[1]='false' if spec['mainOnly'] else 'true'
+                if 'mainOnly' in spec and kind=='ability':
+                    if has_owner_is_main_condition(row, kind):
+                        if not spec['mainOnly']:
+                            raise ValueError('此条目含独立的主位执行条件，不能用副位标记开关解除；请保留条目并由制作方核对')
+                    else:
+                        row[1]='false' if spec['mainOnly'] else 'true'
                 if spec.get('duration') not in (None,'') and mode=='0':row[cb+10]=row[cb+11]=scaled(spec['duration'],6000000,'持续时间')
                 _validate_row(row,kind)
             else:raise ValueError('不支持的词条操作')

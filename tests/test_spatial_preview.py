@@ -1,5 +1,6 @@
 """Preview-stage persistence, rejection, and compilation isolation regressions."""
 import copy
+import hashlib
 import json
 from pathlib import Path
 import sys
@@ -10,10 +11,11 @@ from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from studio_core import (ProjectStore, StudioError, archive_files, fresh_project,
-                         make_zip, png_bytes, validate)
+                         make_zip, png_bytes, json_bytes, validate)
 from spatial_preview import validate_preview_stage
 from studio_compile import compile_project, compiled_scene_preview
 from character_contract import export_contract
+from character_dependencies import canonical
 
 
 def stage(profile="custom"):
@@ -119,9 +121,16 @@ class SpatialPreviewTests(unittest.TestCase):
         baseline_contract = export_contract(self.store, self.store.load(p["id"]))
         files = archive_files(baseline_zip)
         self.assertTrue(any(name.startswith("compiled/") for name in files))
+        baseline_project = self.store.load(p["id"])
+        baseline_identity = hashlib.sha256(canonical(baseline_project)).hexdigest()
+        self.assertEqual(baseline_report["dependencyClosure"]["projectIdentity"]["sha256"],
+                         baseline_identity)
         for profile in ("reference", "custom"):
             with self.subTest(profile=profile):
-                p = self.store.load(p["id"])
+                # A failed assertion in one profile must not leave its metadata
+                # in the next profile's input.
+                p = copy.deepcopy(baseline_project)
+                self.store._write(p)
                 original = copy.deepcopy(p)
                 p["previewStage"] = stage(profile)
                 validate(p)
@@ -130,8 +139,33 @@ class SpatialPreviewTests(unittest.TestCase):
                 self.store._write(p)
                 persisted = self.path.read_bytes()
                 compiled_zip, report = compile_project(self.store, p["id"])
-                self.assertEqual(compiled_zip, baseline_zip)
-                self.assertEqual(report, baseline_report)
+                # Whole-project provenance includes previewStage. Only these
+                # exact identity fields and their report-member receipts may
+                # change; every game/art/DSL/audio member stays byte-for-byte.
+                project_identity = hashlib.sha256(canonical(p)).hexdigest()
+                self.assertNotEqual(project_identity, baseline_identity)
+                expected_files = dict(files)
+                closure = json.loads(files["角色依赖闭包.json"])
+                closure["projectIdentity"]["sha256"] = project_identity
+                expected_files["角色依赖闭包.json"] = json_bytes(closure)
+                audit = json.loads(files["整角色图集审计.json"])
+                audit["dependencyClosure"]["projectIdentity"]["sha256"] = project_identity
+                expected_files["整角色图集审计.json"] = json_bytes(audit)
+                expected_report = copy.deepcopy(baseline_report)
+                expected_report["dependencyClosure"]["projectIdentity"]["sha256"] = project_identity
+                expected_report["characterAudit"]["dependencyClosure"]["projectIdentity"]["sha256"] = project_identity
+                for receipt in expected_report["files"]:
+                    if receipt["path"] in ("角色依赖闭包.json", "整角色图集审计.json"):
+                        payload = expected_files[receipt["path"]]
+                        self.assertEqual(receipt["size"], len(payload))
+                        receipt["sha256"] = hashlib.sha256(payload).hexdigest()
+                expected_files["report.json"] = json_bytes(expected_report)
+                actual_files = archive_files(compiled_zip)
+                self.assertEqual(set(actual_files), set(files))
+                for name, expected in expected_files.items():
+                    self.assertEqual(actual_files[name], expected, name)
+                self.assertEqual(compiled_zip, make_zip(expected_files))
+                self.assertEqual(report, expected_report)
                 self.assertEqual(compiled_scene_preview(self.store, p), baseline_scene)
                 self.assertEqual(export_contract(self.store, p), baseline_contract)
                 self.assertEqual(self.path.read_bytes(), persisted)

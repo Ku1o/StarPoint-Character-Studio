@@ -360,6 +360,26 @@ def compile_native_effect(store, p, effect, code):
 
 
 def compiled_preview(store, pid, group, animation_id):
+    with store.lock:
+        return _compiled_preview(store, pid, group, animation_id)
+
+
+def _configured_preview_files(store, p, output):
+    """Use the whole-project budget decisions for enabled atlas previews."""
+    from atlas_optimizer import optimize_files, validate_options
+    options = validate_options(p.get('atlasOptimization'))
+    if not options['enabled']:
+        return optimize_files(output, options)
+    with store.lock:
+        compiled, report = _compile_project(store, p['id'], project=p, preview_only=True)
+    selected = {path: compiled['compiled/common/' + path] for path in output}
+    optimization = dict(report, selectionBasis='whole-project-budget')
+    optimization['selectedBundles'] = [b for b in optimization['bundles']
+                                       if b['png'].removeprefix('compiled/common/') in output]
+    return selected, optimization
+
+
+def _compiled_preview(store, pid, group, animation_id):
     """The player receives only decoded compiled bytes, never the authoring clips."""
     p = store.load(pid)
     validate(p)
@@ -383,6 +403,7 @@ def compiled_preview(store, pid, group, animation_id):
             raise StudioError(issue)
     if not output:
         raise StudioError("请先添加画稿")
+    output, optimization_report = _configured_preview_files(store, p, output)
     def decoded(suffix):
         raw = next(v for k, v in output.items() if k.endswith(suffix))
         return AMF3Reader(zlib.decompress(raw, -15)).read_value()
@@ -427,6 +448,7 @@ def compiled_preview(store, pid, group, animation_id):
         issues.append(issue)
     return {"name": anim["name"], "kind": sequence["kind"], "frames": frames, "scale": scale, "audio": audio,
             "runtimeSpeed": anim.get("runtimeSpeed", 1), "assets": assets, "sourceRevision": p["revision"],
+            "atlasOptimization": optimization_report,
             "issues": issues, "files": [{"path": k, "sha256": hashlib.sha256(v).hexdigest()} for k, v in output.items()]}
 
 
@@ -439,6 +461,10 @@ def compiled_scene_preview(store, p):
     result = {"name": p["skill"].get("name") or "技能组合", "kind": "once", "frames": frames,
               "scale": 1, "runtimeSpeed": 1, "assets": {}, "audio": [], "issues": list(p["scene"].get("source", {}).get("notes", [])),
               "files": [], "sourceRevision": p["revision"]}
+    result['trust'] = dict(p['scene'].get('source', {}).get('trust', {}), nativeVerified=False,
+                           previewKind='compiled_material_arrangement')
+    result['coordinateDeclarations'] = [dict(track=track['id'], declaration=track.get('source', {}).get('coordinate', {})) for track in p['scene']['tracks']]
+    result['issues'].append('素材编排回读不证明世界坐标、跟随、敌人命中绑定或原生恢复已通过')
     cache = {}
     code = p["identity"].get("code", "new_character")
     for t in p["scene"]["tracks"]:
@@ -492,14 +518,26 @@ def compiled_scene_preview(store, p):
     return result
 
 
-def compile_project(store, pid):
-    p = store.load(pid)
+def compile_project(store, pid, *, optimize=None):
+    # Freeze one local project revision and its payloads against editor writes.
+    with store.lock:
+        return _compile_project(store, pid, optimize=optimize)
+
+
+def _compile_project(store, pid, *, optimize=None, project=None, preview_only=False):
+    p = store.load(pid) if project is None else project
     validate(p)
     checks = project_checks(p)
     blockers = [item for item in checks["issues"] if item.get("blocking")]
-    if blockers:
+    if blockers and not preview_only:
         raise StudioError("交付检查发现需先修正的问题（仍可保存并导出草稿工程）：\n- "
                           + "\n- ".join(item["text"] for item in blockers))
+    from atlas_optimizer import validate_options
+    optimization_options = validate_options(p.get('atlasOptimization'))
+    if optimize is not None:
+        if not isinstance(optimize, bool):
+            raise StudioError('无损优化开关必须为布尔值')
+        optimization_options['enabled'] = optimize
     code = p["identity"].get("code", "")
     if not re.fullmatch(r"[a-z][a-z0-9_]{1,70}", code):
         raise StudioError("请在角色资料中填写英文资源代号，以小写字母开头，仅含小写字母、数字和下划线")
@@ -567,6 +605,12 @@ def compile_project(store, pid):
             image_from(raw)
         elif path.endswith(".amf3.deflate"):
             AMF3Reader(zlib.decompress(raw, -15)).read_value()
+    from atlas_optimizer import optimize_files
+    files, optimization_report = optimize_files(files, optimization_options)
+    if preview_only:
+        return files, optimization_report
+    from character_dependencies import analyze_project
+    dependency_closure = analyze_project(store, p, files)
     from atlas_editor import ui_atlas
     packed = ui_atlas(store, p)
     if packed:
@@ -575,11 +619,37 @@ def compile_project(store, pid):
         files["handoff/ui-images.atlas.json"] = json_bytes(records)
         receipts.append({"kind": "ui-handoff-atlas", "cells": len(records), "readback": True, "gameReady": False})
     pending.extend(["角色/技能/能力/成长/玛纳板与服务端数据接入", "UI 交接图集已可生成；游戏专用 illustration 图集、定位表与界面蒙版仍需接入校准", "Android/iOS 技能切入平台纹理", "原生技能时序、音效挂接与真机验收", "新角色 ID 与存档导入导出兼容"])
+    from character_audit import compiled_report
+    from audio_review import project_report as audio_report
+    from degree_editor import compile_files as compile_degrees, report as degree_report
+    from entry_layout import report as entry_report
+    from source_intake import source_intake_payload
+    from action_presets import action_contract_payload
+    character_audit = compiled_report(p, files)
+    audio_review = audio_report(store, p)
+    degrees = degree_report(store, p)
+    files.update(compile_degrees(store, p))
+    files['图集无损优化.json'] = json_bytes(optimization_report)
+    files['角色依赖闭包.json'] = json_bytes(dependency_closure)
+    character_audit['optimizer'] = optimization_report
+    character_audit['dependencyClosure'] = dependency_closure
+    files['整角色图集审计.json'] = json_bytes(character_audit)
+    files['声音编码后测量.json'] = json_bytes(audio_review)
+    files['获取台词排版.json'] = json_bytes(entry_report(p))
+    files['可佩戴铭牌交接.json'] = json_bytes(degrees)
+    files['source-intake.json'] = json_bytes(source_intake_payload(p))
+    files['像素动作契约.json'] = json_bytes(action_contract_payload(p))
+    from production_brief import author_readme as production_author_readme, author_submission_form
+    files['README-稿主必读.md'] = author_readme(p, checks).encode('utf-8')
+    files['素材提交填写表.md'] = author_submission_form(p).encode('utf-8')
+    pending.extend(degrees['pending'])
+    pending.extend(['完整角色语义依赖与原生图集装箱仍需核验', '未登记声音路径、编码后配方与全文听感仍需核验', '获取台词近似布局需要首次 NewEntry 实测'])
     report = {"schema": "studio-compile-report-v1", "project": p["name"], "sourceRevision": p["revision"], "gameReady": False, "receipts": receipts, "pending": pending, "files": [{"path": k, "sha256": hashlib.sha256(v).hexdigest(), "size": len(v)} for k, v in sorted(files.items())]}
+    report.update(characterAudit=character_audit, audioReview=audio_review, degrees=degrees,
+                  atlasOptimization=optimization_report, dependencyClosure=dependency_closure)
     report["checks"] = checks
     report["readiness"] = checks.get("readiness", {})
     files["report.json"] = json_bytes(report)
-    files["README-稿主必读.md"] = author_readme(p).encode("utf-8")
     files["声音用途与台词.json"] = json_bytes({"voices": p.get("voices", []), "sounds": p.get("sounds", []), "note": "用途与台词用于交接；主界面语音表、角色喊声槽位与剧情字幕仍需接入绑定。"})
     files["制作需求.json"] = json_bytes({"identity": p["identity"], "skill": p["skill"], "scene": p["scene"], "notes": p["notes"], "template": p["template"]})
     files["MOD角色接入契约.json"] = json_bytes(export_contract(store, p))

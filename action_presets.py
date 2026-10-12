@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import math
 import uuid
 
 
@@ -40,3 +41,95 @@ def default_animations():
 
 def catalog():
     return copy.deepcopy(ACTION_PRESETS)
+
+
+def default_action_contract(animation=None):
+    """Author intent and native selector verification are independent declarations."""
+    return {"schemaVersion": 1, "purpose": "", "sourceFrames": [], "sourceCanvas": None,
+            "bodyAnchor": None, "feetAnchor": None, "durationTicks": None, "loop": None,
+            "returnState": "", "selector": {"status": "unknown", "value": None,
+            "context": "", "evidence": ""}}
+
+
+def normalize_action_contract(animation):
+    result = default_action_contract()
+    if "actionContract" not in animation:
+        return result
+    declared = animation["actionContract"]
+    if not isinstance(declared, dict):
+        raise ValueError("动作契约必须为对象")
+    result.update(copy.deepcopy(declared))
+    if result["schemaVersion"] != 1 or isinstance(result["schemaVersion"], bool):
+        raise ValueError("不支持此动作契约版本")
+    for key in ("purpose", "returnState"):
+        if not isinstance(result[key], str):
+            raise ValueError("动作用途和返回状态必须为文本")
+    for key in ("sourceCanvas", "bodyAnchor", "feetAnchor"):
+        pair = result[key]
+        if pair is not None and (not isinstance(pair, list) or len(pair) != 2 or not all(
+                isinstance(n, (int, float)) and not isinstance(n, bool) and math.isfinite(n) for n in pair)):
+            raise ValueError("动作画布和锚点必须为两个有限数值或未标注")
+        if key == "sourceCanvas" and pair is not None and min(pair) <= 0:
+            raise ValueError("动作源画布必须大于零")
+    duration = result["durationTicks"]
+    if duration is not None and (not isinstance(duration, int) or isinstance(duration, bool) or duration < 1):
+        raise ValueError("动作时长必须为正整数播放帧或未标注")
+    if result["loop"] is not None and not isinstance(result["loop"], bool):
+        raise ValueError("动作循环必须为布尔值或未标注")
+    if not isinstance(result["sourceFrames"], list) or not all(isinstance(row, dict) for row in result["sourceFrames"]):
+        raise ValueError("动作源帧必须为引用数组")
+    for row in result["sourceFrames"]:
+        if not isinstance(row.get("source"), str) or not row["source"]:
+            raise ValueError("动作源帧必须引用原稿编号")
+        if row.get("cell") is not None and (not isinstance(row["cell"], int) or isinstance(row["cell"], bool) or row["cell"] < 0):
+            raise ValueError("动作源格号必须从 0 开始")
+    selector = result["selector"]
+    if not isinstance(selector, dict):
+        raise ValueError("原生 selector 必须为对象")
+    selector = {**default_action_contract()["selector"], **selector}
+    if selector["status"] not in ("unknown", "declared", "verified", "not_applicable"):
+        raise ValueError("原生 selector 核验状态无效")
+    if selector["value"] is not None and (not isinstance(selector["value"], (int, str)) or isinstance(selector["value"], bool)):
+        raise ValueError("原生 selector 值无效")
+    for key in ("context", "evidence"):
+        if not isinstance(selector[key], str):
+            raise ValueError("原生 selector 语境和证据必须为文本")
+    if selector["status"] == "verified" and (selector["value"] is None or not selector["context"].strip() or not selector["evidence"].strip()):
+        raise ValueError("已核验 selector 必须有值、调用语境和证据")
+    if selector["status"] == "unknown" and selector["value"] is not None:
+        raise ValueError("待核 selector 不能声明已知值；可使用作者声明状态")
+    result["selector"] = selector
+    return result
+
+
+def validate_action_contracts(project):
+    from source_intake import validate_source_intake
+    intake = validate_source_intake(project)
+    sources = {row["id"] for row in intake["sources"]}
+    for animation in project.get("animations", []):
+        contract = normalize_action_contract(animation)
+        for row in contract["sourceFrames"]:
+            if row["source"] not in sources:
+                raise ValueError("动作契约引用的原稿不存在")
+        for clip in animation.get("clips", []):
+            if "sourceRef" not in clip:
+                continue
+            ref = clip["sourceRef"]
+            if not isinstance(ref, dict):
+                raise ValueError("动作帧原稿引用必须为对象")
+            # Reuse provenance checks on a copy; reads never add a derivative.
+            candidate = {"assets": project.get("assets", {}), "sourceIntake": {**intake, "derivatives": [
+                {"asset": clip.get("asset"), "source": ref.get("source"), "cell": ref.get("cell"),
+                 "rect": ref.get("rect"), "mask": ref.get("mask"), "transform": ref.get("transform")} ]}}
+            validate_source_intake(candidate)
+    return True
+
+
+def action_contract_payload(project):
+    validate_action_contracts(project)
+    return [{"id": a["id"], "slot": a.get("slot"), "variant": a.get("variant", "normal"),
+             "annotated": "actionContract" in a, "contract": normalize_action_contract(a),
+             "frameMapping": [{"index": i, "asset": c.get("asset"), "hold": c.get("hold"),
+                               "sourceRef": copy.deepcopy(c.get("sourceRef"))}
+                              for i, c in enumerate(a.get("clips", []))]}
+            for a in project.get("animations", [])]

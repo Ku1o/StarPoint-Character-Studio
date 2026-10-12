@@ -5,12 +5,14 @@ function captureEditorScroll(){
   const content=$('#content');
   if(content.dataset.viewKey!==editorViewKey())return null;
   return {key:editorViewKey(),x:window.scrollX,y:window.scrollY,top:content.scrollTop,left:content.scrollLeft,
-    lists:[...content.querySelectorAll('.library-list')].map(el=>({top:el.scrollTop,left:el.scrollLeft}))};
+    lists:[...content.querySelectorAll('.library-list')].map(el=>({top:el.scrollTop,left:el.scrollLeft})),
+    details:[...content.querySelectorAll('details')].map(el=>({label:el.querySelector(':scope > summary')?.textContent,open:el.open}))};
 }
 function restoreEditorScroll(saved){
   const content=$('#content');content.dataset.viewKey=editorViewKey();
   if(!saved||saved.key!==editorViewKey())return;
   [...content.querySelectorAll('.library-list')].forEach((el,i)=>{if(saved.lists[i]){el.scrollTop=saved.lists[i].top;el.scrollLeft=saved.lists[i].left;}});
+  [...content.querySelectorAll('details')].forEach((el,i)=>{const previous=saved.details?.[i];if(previous&&previous.label===el.querySelector(':scope > summary')?.textContent)el.open=previous.open;});
   content.scrollTop=saved.top;content.scrollLeft=saved.left;
   window.scrollTo({left:saved.x,top:saved.y,behavior:'instant'});
 }

@@ -243,6 +243,8 @@ def _programs(store, p):
 def export_contract(store, p):
     """Return a versioned, read-only design handoff, never an installable pack."""
     from production_brief import export_handoff
+    from source_intake import source_intake_payload
+    from action_presets import action_contract_payload
 
     records = {}
     for label, name in SOURCE_FILES.items():
@@ -294,6 +296,8 @@ def export_contract(store, p):
         "productionBrief": copy.deepcopy(production["productionBrief"]),
         "productionChecks": copy.deepcopy(production["checks"]),
         "sourcePrograms": _programs(store, p),
+        "sourceIntake": source_intake_payload(p),
+        "actionContracts": action_contract_payload(p),
         "resourceMapping": {"animations": animations, "effects": effects, "audio": audio,
                             "portraits": copy.deepcopy(p.get("portraits", {})),
                             "crops": copy.deepcopy(p.get("crops", {})),

@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from skill_preview import plan_program, effect_path, preview_plans
+from skill_preview import plan_program, effect_path, preview_plans, author_to_world, validate_preview, anchor_state_report
 
 
 def effect(ref, name="normal", ticks=30, scale=6, kind="once", begin=1):
@@ -25,6 +25,58 @@ def block(*commands):
 
 
 class SkillPlanTests(unittest.TestCase):
+    def test_normal_cast_restore_requires_explicit_mapping_and_keeps_native_deferred(self):
+        self.assertEqual(anchor_state_report({})["status"], "deferred")
+        contract = {"sourceCanvas": [64, 64], "bodyAnchor": [32, 32], "feetAnchor": [32, 48]}
+        p = {"animations": [{"id": key, "frameScale": 6, "actionContract": copy.deepcopy(contract), "clips": [{"hold": 1}]}
+                            for key in ("normal", "cast", "restore")],
+             "skillPreview": {"actionStates": {"normal": "normal", "cast": "cast", "restore": "restore", "source": "author-mapping"}}}
+        self.assertTrue(anchor_state_report(p)["declaredAnchorConsistency"])
+        self.assertFalse(anchor_state_report(p)["nativeVerified"])
+        p["animations"][1]["actionContract"]["feetAnchor"] = [32, 49]
+        self.assertFalse(anchor_state_report(p)["declaredAnchorConsistency"])
+
+    def test_optional_preview_metadata_rejects_bad_values_and_keeps_extensions(self):
+        p = {"skillPreview": {"custom": [1]}, "effects": [{"coordinateDeclaration": {"custom": {"v": 2}}}]}
+        original = copy.deepcopy(p); validate_preview(p); self.assertEqual(p, original)
+        for bad in ({"canvas": [-1, 2]}, {"anchor": [1]}, {"partsScale": True}, {"source": 3}):
+            with self.assertRaises(ValueError):
+                validate_preview({"effects": [{"coordinateDeclaration": bad}]})
+
+    def test_ball_hide_is_known_invalid_and_does_not_hide_actor(self):
+        p = {"animations": [{"id": "idle", "slot": "neutral", "clips": [{"hold": 6}]}]}
+        result = plan_program(p, {"tree": block(["HideCharacter", -18, 48])})
+        self.assertEqual([t["start"] for t in result["scene"]["tracks"] if t["type"] == "actor"], [0])
+        self.assertEqual(result["deferred"][0]["status"], "known-invalid")
+        self.assertTrue(any("原生无效" in n for n in result["notes"]))
+        self.assertFalse(result["scene"]["source"]["trust"]["nativeVerified"])
+
+    def test_declared_author_canvas_recipe_is_not_native_acceptance(self):
+        declaration = {"canvas": [180, 320], "anchor": [90, 160], "partsScale": 6, "source": "controlled-vyrn-recipe"}
+        self.assertEqual([author_to_world(declaration, [90, y])["localWorldOffset"][1] for y in (80, 132, 184, 236)], [-480, -168, 144, 456])
+        self.assertFalse(author_to_world(declaration, [90, 80])["nativeVerified"])
+        self.assertEqual(author_to_world({}, [90, 80])["status"], "unknown")
+
+    def test_member_follow_zone_lock_and_hit_binding_are_distinct(self):
+        a = "battle/effect/a/create"
+        p = {"effects": [effect(a)], "skillPreview": {"subjectBindings": {"-123": {"name": "ZoneCenter", "source": "fixture-binding"}}}}
+        member, zone = show(a), show(a)
+        member[3], member[10] = -17, True
+        zone[3] = -123
+        result = plan_program(p, {"tree": block(member, zone)})
+        coords = [t["source"]["coordinate"] for t in result["scene"]["tracks"]]
+        self.assertEqual([c["subjectName"] for c in coords], ["Member", "ZoneCenter"])
+        self.assertTrue(coords[0]["follow"])
+        self.assertTrue(coords[1]["locked"])
+        self.assertFalse(any(c["nativeVerified"] for c in coords))
+
+    def test_unknown_subject_stays_deferred_even_with_visible_reference(self):
+        a = "battle/effect/a/create"; command = show(a); command[3] = -999
+        result = plan_program({"effects": [effect(a)]}, {"tree": block(command)})
+        self.assertEqual(result["visualEvents"], 1)
+        self.assertEqual(result["scene"]["tracks"][0]["source"]["coordinate"]["status"], "deferred")
+        self.assertTrue(result["deferred"])
+
     def test_wait_hiding_first_sequence_and_override_scale(self):
         a, b = "battle/effect/a/jump", "battle/effect/a/blast"
         p = {"animations": [{"id": "idle", "slot": "neutral", "clips": [{"hold": 6}]}],

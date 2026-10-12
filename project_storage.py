@@ -20,7 +20,7 @@ from pathlib import Path
 
 from app_metadata import VERSION
 from studio_core import (StudioError, SAFE, identifier, json_bytes,
-                         normalize_declarations, validate)
+                         normalize_declarations, validate_draft)
 
 FORMAT_VERSION = 1
 HISTORY_NAME = re.compile(r"[0-9]{6,}(?:-[0-9a-f]{64})?\.json\Z")
@@ -152,7 +152,18 @@ def fingerprint(files):
 
 
 def verify_payloads(directory, p):
-    validate(p)
+    from source_intake import source_intake_payload, verify_source_bytes
+    from studio_core import verify_source_archive_members
+    intake = source_intake_payload(p)
+    originals = {}
+    for record in intake['sources'] + intake['packages']:
+        if record.get('status') == 'missing':
+            continue
+        payload = safe_child(directory, record['blob']).read_bytes()
+        verify_source_bytes(record, payload)
+        originals[record['blob']] = payload
+    verify_source_archive_members(intake, originals)
+    validate_draft(p)
     for asset in p["assets"].values():
         name = asset.get("file", "")
         if Path(name).name != name or not name or any(c in name for c in "\\/:"):

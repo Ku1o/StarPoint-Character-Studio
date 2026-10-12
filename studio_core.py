@@ -153,9 +153,34 @@ def declaration_payload(p):
     return payload(p)
 
 
+_PLAY_LABELS = {"once": "单次", "loop": "循环", "pass": "衔接下一段", "stop": "停在首帧"}
+_VARIANT_LABELS = {"plain": "纯本体", "composite": "合成帧", "mixed": "纯本体+合成帧混用", "": "未标注"}
+
+
 def author_readme(p, report=None):
     from author_declarations import author_readme as readme
-    return readme(p, report)
+    from action_presets import normalize_action_contract
+    from production_brief import author_readme as production_readme
+    from author_declarations import _md
+    lines = [readme(p, report), "", "### 作者动作意图与接入方核验", "",
+             "以下是作者声明；实际帧数与声明分别保留。槽位预设不证明原生初始化 selector。", "",
+             "| 动作 | 用途 | 画布 | 身体 / 足底锚点 | 声明时长 / 循环 / 返回 | selector 状态 / 语境 / 依据 |",
+             "| --- | --- | --- | --- | --- | --- |"]
+    pending = []
+    for anim in p.get("animations", []):
+        contract = normalize_action_contract(anim)
+        selector = contract["selector"]
+        values = [anim.get("name", anim.get("id", "")), contract["purpose"] or "未标注", contract["sourceCanvas"],
+                  f"{contract['bodyAnchor']} / {contract['feetAnchor']}",
+                  f"{contract['durationTicks']} / {contract['loop']} / {contract['returnState'] or '未标注'}",
+                  f"{selector['status']} / {selector['context']} / {selector['evidence']}"]
+        lines.append("| " + " | ".join(_md(str(value)) for value in values) + " |")
+        if selector["status"] != "verified":
+            pending.append("动作“" + _md(str(anim.get("name", anim.get("id", "")))) + "”的原生初始化/恢复 selector 待接入方核实。")
+        if not contract.get("feetAnchor"):
+            pending.append("动作“" + _md(str(anim.get("name", anim.get("id", "")))) + "”身体足底尚未标注。")
+    lines += ["", *["- " + item for item in pending], "", production_readme(p), ""]
+    return "\n".join(lines)
 
 
 def amf_bytes(value):
@@ -203,11 +228,27 @@ def make_zip(files):
     return stream.getvalue()
 
 
+def verify_source_archive_members(intake, payloads):
+    """Individual hashes alone cannot prove that a member belongs to a ZIP."""
+    packages = {row['id']: row for row in intake['packages']}
+    members = {}
+    for source in intake['sources']:
+        package = packages.get(source.get('package'))
+        if not package or package.get('status') == 'missing':
+            continue
+        if package['id'] not in members:
+            members[package['id']] = archive_files(payloads[package['blob']])
+        member = members[package['id']].get(source['path'])
+        if member is None or member != payloads[source['blob']]:
+            raise StudioError('原稿成员路径或 bytes 与所声明原包不一致')
+
+
 def fresh_project(name="未命名角色", kind="original"):
     if kind not in ("original", "template"):
         raise StudioError("新建方式无效")
-    return {"schema": "starpoint-character-studio-v1", "id": uuid.uuid4().hex, "name": str(name)[:100],
-            "kind": kind, "revision": 0, "updated": time.time(), "identity": {"title": "", "element": "火", "rarity": 5, "race": "人", "role": "", "description": "", "author": "", "source": "", "code": "new_character"},
+    project_id = uuid.uuid4().hex
+    return {"schema": "starpoint-character-studio-v1", "id": project_id, "name": str(name)[:100],
+            "kind": kind, "revision": 0, "updated": time.time(), "identity": {"title": "", "element": "火", "rarity": 5, "race": "人", "role": "", "description": "", "author": "", "source": "", "code": "character_" + project_id},
             "template": None, "assets": {}, "portraits": {"base": None, "evolved": None}, "crops": {},
             "animations": default_animations() if kind == "original" else [], "effects": [], "scene": {"duration": 120, "tracks": []}, "voices": [],
             "sounds": [], "notes": "", "warnings": [], "referenceFiles": [], "skill": {"name": "", "description": "", "implementation": "待接入"},
@@ -285,19 +326,28 @@ class ProjectStore:
             p["assets"] = old["assets"]
             p["referenceFiles"] = old.get("referenceFiles", [])
             p["uiSources"] = old.get("uiSources", {})
+            if "sourceIntake" in old or "sourceIntake" in p:
+                from source_intake import normalize_source_intake, preserve_source_identity
+                p.setdefault("sourceIntake", copy.deepcopy(old.get("sourceIntake", {})))
+                preserve_source_identity(old, p)
+                before = normalize_source_intake(old)
+                after = normalize_source_intake(p)
+                if any(before[key] != after[key] for key in ("sources", "packages")):
+                    raise StudioError("原稿身份只能通过原稿接收入口新增，不能从编辑表单改写")
             if "productionBrief" not in p:
                 p["productionBrief"] = copy.deepcopy(old.get("productionBrief", default_production_brief()))
             if p.get("nativeGameplay") and old.get("nativeGameplay"):
                 p["nativeGameplay"]["source"] = old["nativeGameplay"]["source"]
-            validate(p)
+            validate_draft(p)
             p["revision"] += 1
             p["updated"] = time.time()
             self._write(p)
             return p
 
-    def add_asset(self, p, name, raw, category="image", enforce_limits=False):
+    def add_asset(self, p, name, raw, category="image", enforce_limits=False, source=None):
         if len(raw) > FILE_BYTES:
             raise StudioError("单个素材超过 64 MiB")
+        original_name, original_raw = str(name).replace("\\", "/"), raw
         name = PurePosixPath(str(name).replace("\\", "/")).name[:160]
         ext = Path(name).suffix.lower()
         meta = {"name": name, "category": category}
@@ -324,8 +374,47 @@ class ProjectStore:
         path = directory / meta["file"]
         if not path.exists():
             path.write_bytes(raw)
-        p["assets"][aid] = meta
+        # Preserve existing last-import metadata semantics and unknown extensions;
+        # all original names/encodings remain independently in provenance.
+        p["assets"][aid] = dict(p["assets"].get(aid, {}), **meta)
+        from source_intake import register_source, record_derivative
+        if source is None:
+            original = register_source(p, original_name, original_raw)
+            target = self.directory(p["id"]) / original["blob"]
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if target.exists() and target.read_bytes() != original_raw:
+                raise StudioError("原稿存储文件与身份不一致")
+            if not target.exists():
+                target.write_bytes(original_raw)
+            source = {"sourceId": original["id"], "transform": {"operation": "png-normalize" if ext == ".png" else "identity"}}
+        record_derivative(p, aid, source["sourceId"], source.get("cell"), source.get("rect"), source.get("mask"), source.get("transform"))
         return aid
+
+    def import_source_archive(self, pid, name, raw, revision=None):
+        """Receive an author ZIP without executing or confusing it with a wfchar."""
+        from source_intake import register_package, register_source
+        files = archive_files(raw)
+        with self.lock:
+            p = self.load(pid)
+            if revision is not None and revision != p["revision"]:
+                raise StudioError("工程已更新，请重新打开")
+            package = register_package(p, str(name), raw)
+            payloads = {package["blob"]: raw}
+            for path, payload in files.items():
+                record = register_source(p, path, payload, package["id"])
+                payloads[record["blob"]] = payload
+            for path, payload in payloads.items():
+                target = self.directory(pid) / path
+                if target.exists() and target.read_bytes() != payload:
+                    raise StudioError("原稿存储文件与身份不一致")
+            for path, payload in payloads.items():
+                target = self.directory(pid) / path
+                target.parent.mkdir(parents=True, exist_ok=True)
+                if not target.exists():
+                    target.write_bytes(payload)
+            p["revision"] += 1
+            self._write(p)
+            return {"project": p, "package": package, "sourceCount": len(files)}
 
     def asset_bytes(self, p, aid):
         identifier(aid)
@@ -386,7 +475,7 @@ class ProjectStore:
 
     def export(self, pid):
         p = self.load(pid)
-        validate(p)
+        validate_draft(p)
         files = {"project.json": json_bytes(p)}
         for aid, asset in p["assets"].items():
             files["assets/" + asset["file"]] = self.asset_bytes(p, aid)
@@ -394,15 +483,29 @@ class ProjectStore:
             path = PurePosixPath(rel)
             if not path.is_absolute() and ".." not in path.parts and "\\" not in rel:
                 files["reference/" + rel] = (self.directory(pid) / "reference" / Path(rel)).read_bytes()
+        from source_intake import source_intake_payload, verify_source_bytes
+        intake = source_intake_payload(p)
+        from project_storage import safe_child
+        for record in intake["sources"] + intake["packages"]:
+            if record.get("status") == "missing":
+                continue
+            payload = safe_child(self.directory(pid), record["blob"]).read_bytes()
+            verify_source_bytes(record, payload)
+            files[record["blob"]] = payload
+        verify_source_archive_members(intake, files)
+        files["source-intake.json"] = json_bytes(intake)
         files["交接说明.txt"] = ("星点角色工坊可编辑工程。用“打开工程 / 参考包”导入继续制作。\n这是创作工程，不是可直接安装的游戏补丁。\n").encode("utf-8")
         checks = project_checks(p)
         files["检查报告.json"] = json_bytes(checks)
         files["README-稿主必读.md"] = author_readme(p, checks).encode("utf-8")
         files["declarations.json"] = json_bytes(declaration_payload(p))
-        files["制作交接.json"] = json_bytes(export_handoff(p))
+        from workshop_handoff import report as workshop_handoff
+        files["制作交接.json"] = json_bytes(workshop_handoff(self, p))
+        from production_brief import author_submission_form
+        files["素材提交填写表.md"] = author_submission_form(p).encode("utf-8")
         return make_zip(files)
 
-    def import_archive(self, raw):
+    def import_archive(self, raw, name='imported-package.zip'):
         files = archive_files(raw)
         matches = [name for name in files if PurePosixPath(name).name == "project.json"]
         if len(matches) == 1:
@@ -415,7 +518,7 @@ class ProjectStore:
             p["revision"] = 0
             p["updated"] = time.time()
             p["productionBrief"] = normalize_production_brief(p)
-            validate(p)
+            validate_draft(p)
             payloads = {}
             for aid, a in p["assets"].items():
                 identifier(aid)
@@ -434,6 +537,18 @@ class ProjectStore:
                 if path.is_absolute() or ".." in path.parts or "\\" in rel or ":" in rel:
                     raise StudioError("参考文件路径无效")
                 references[rel] = files[prefix + "reference/" + rel]
+            from source_intake import source_intake_payload, verify_source_bytes
+            sources = {}
+            intake = source_intake_payload(p)
+            for record in intake["sources"] + intake["packages"]:
+                if record.get("status") == "missing":
+                    continue
+                payload = files.get(prefix + record["blob"])
+                if payload is None:
+                    raise StudioError("原稿 bytes 缺失，工程未导入")
+                verify_source_bytes(record, payload)
+                sources[record["blob"]] = payload
+            verify_source_archive_members(intake, sources)
             directory = self.directory(p["id"])
             directory.mkdir(exist_ok=False)
             (directory / "assets").mkdir()
@@ -443,13 +558,17 @@ class ProjectStore:
                 target = directory / "reference" / rel
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(payload)
+            for rel, payload in sources.items():
+                target = directory / rel
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(payload)
             from portrait_editor import hydrate
             hydrate(self, p)
             self._write(p)
             return p
-        return self.import_reference(files)
+        return self.import_reference(files, package_name=name, package_raw=raw)
 
-    def import_reference(self, files):
+    def import_reference(self, files, package_name=None, package_raw=None):
         identity_keys = [k for k in files if k.endswith("reference/data_readable/identity.json")]
         if len(identity_keys) != 1:
             raise StudioError("请选择工坊工程包或角色专用参考包")
@@ -458,6 +577,17 @@ class ProjectStore:
         reference = {k[len(base):]: v for k, v in files.items() if k.startswith(base)}
         report = json.loads(reference.get("REFERENCE_REPORT.json", b"{}"))
         p = self.create(identity.get("name", "模板角色") + " · 新角色", "template")
+        from source_intake import register_package, register_source
+        package = register_package(p, package_name or '散装参考素材（原包未收到）', package_raw, metadata={'kind': 'reference'})
+        if package_raw is not None:
+            original_zip = self.directory(p['id']) / package['blob']; original_zip.parent.mkdir(parents=True, exist_ok=True); original_zip.write_bytes(package_raw)
+        source_records = {}
+        for source_path, payload in reference.items():
+            record = register_source(p, base + source_path, payload, package['id'], metadata={'kind': 'reference'})
+            target = self.directory(p['id']) / record['blob']; target.parent.mkdir(parents=True, exist_ok=True)
+            if not target.exists():
+                target.write_bytes(payload)
+            source_records[source_path] = record['id']
         p["template"] = {"id": identity.get("character_id"), "name": identity.get("name"), "code": identity.get("code_name"), "version": report.get("resource_tail", "未记录"), "timingModel": "frame-end-v1"}
         p["identity"]["code"] = "new_" + str(identity.get("code_name", "character"))
         p["identity"].update({k: identity[k] for k in ("title", "element", "rarity") if k in identity})
@@ -476,7 +606,7 @@ class ProjectStore:
         p["uiSources"] = {}
         for name, payload in reference.items():
             if name.startswith("ui/") and name.endswith(".png"):
-                aid = self.add_asset(p, Path(name).name, payload, "portrait")
+                aid = self.add_asset(p, Path(name).name, payload, "portrait", source={'sourceId': source_records[name], 'transform': {'operation': 'reference-import'}})
                 from portrait_editor import source_key
                 key = source_key(name)
                 if key:
@@ -490,11 +620,12 @@ class ProjectStore:
                 audio_name = meta.get("logical", name).rsplit("/", 1)[-1]
                 if not Path(audio_name).suffix:
                     audio_name += Path(name).suffix
-                aid = self.add_asset(p, audio_name, payload, "sfx" if sound else "voice")
+                aid = self.add_asset(p, audio_name, payload, "sfx" if sound else "voice", source={'sourceId': source_records[name], 'transform': {'operation': 'reference-import'}})
                 relative = name.removeprefix("voice/")
                 usage = meta.get("usage", "skill_sfx" if sound else voice_usage(relative))
+                entry = relative.split('/')[0] if relative.split('/')[0] in VOICE_ENTRIES else ''
                 p["sounds" if sound else "voices"].append({"id": uuid.uuid4().hex[:12], "name": meta.get("logical", relative).rsplit("/", 1)[-1], "asset": aid,
-                    "usage": usage, "text": meta.get("text", ""), "logical": meta.get("logical", ""), "sourceFile": name})
+                    "usage": usage, "text": meta.get("text", ""), 'entry': entry, "logical": meta.get("logical", ""), "sourceFile": name})
         for variant, stem, sheet_name in (("normal", "pixelart", "sprite_sheet"), ("special", "special", "special_sprite_sheet")):
             paths = [f"pixelart/{sheet_name}.png", f"pixelart/{sheet_name}.atlas.json", f"pixelart/{stem}.timeline.json"]
             if not all(path in reference for path in paths):
@@ -509,8 +640,10 @@ class ProjectStore:
                 if not match:
                     continue
                 cell = atlas_crop(sheet, entry)
-                aid = self.add_asset(p, Path(entry["n"]).name + ".png", png_bytes(cell), "pixel")
-                entries[int(match.group(1))] = (aid, int(entry.get("fx", 0)), int(entry.get("fy", 0)), int(entry.get("fw", 256)), int(entry.get("fh", 256)))
+                ref = {'sourceId': source_records[paths[0]], 'rect': [int(entry['x']), int(entry['y']), int(entry['w']), int(entry['h'])],
+                       'transform': {'operation': 'atlas-untrim', 'atlasSource': source_records[paths[1]], 'atlasEntry': entry['n'], 'trim': copy.deepcopy(entry)}}
+                aid = self.add_asset(p, Path(entry["n"]).name + ".png", png_bytes(cell), "pixel", source=ref)
+                entries[int(match.group(1))] = (aid, int(entry.get("fx", 0)), int(entry.get("fy", 0)), int(entry.get("fw", 256)), int(entry.get("fh", 256)), ref)
             keys = sorted(entries)
             if not keys:
                 continue
@@ -526,19 +659,20 @@ class ProjectStore:
                     index = bisect.bisect_left(keys, tick)
                     if tick <= 0 or index >= len(keys):
                         index = 0  # AS3 int(undefined) used by the native player.
-                    aid, fx, fy, w, h = entries[keys[index]]
-                    clip = {"asset": aid, "hold": 1, "x": -fx + float(frame.get("x", -w / 2)), "y": -fy + float(frame.get("y", -h / 2)), "flip": False, "rotation": 0, "scale": 1, "opacity": 1}
+                    aid, fx, fy, w, h, ref = entries[keys[index]]
+                    source_ref = {'source': ref['sourceId'], **{key: copy.deepcopy(value) for key, value in ref.items() if key != 'sourceId'}}
+                    clip = {"asset": aid, "hold": 1, "x": -fx + float(frame.get("x", -w / 2)), "y": -fy + float(frame.get("y", -h / 2)), "flip": False, "rotation": 0, "scale": 1, "opacity": 1, "sourceRef": source_ref}
                     if clips and all(clips[-1][k] == clip[k] for k in clip if k != "hold"):
                         clips[-1]["hold"] += 1
                     else:
                         clips.append(clip)
                 p["animations"].append({"id": uuid.uuid4().hex[:12], "name": LABELS.get(seq["name"], seq["name"]), "slot": seq["name"], "variant": variant, "kind": seq.get("kind", "once"), "fps": 60, "runtimeSpeed": 0.5 if seq["name"] in ("walk_front", "walk_back") else 1, "frameScale": frame.get("scale", 6), "clips": clips})
-        self.import_effects(p, reference)
+        self.import_effects(p, reference, source_records)
         hydrate_from_project(p)
         self._write(p)
         return p
 
-    def import_effects(self, p, reference):
+    def import_effects(self, p, reference, source_records=None):
         for path in sorted(reference):
             if not path.startswith("effect/") or not path.endswith(".parts.json"):
                 continue
@@ -555,7 +689,12 @@ class ProjectStore:
             sheet = image_from(reference[png_path])
             cells = {}
             for record in atlas:
-                cells[record["n"]] = (self.add_asset(p, Path(record["n"]).name + ".png", png_bytes(atlas_crop(sheet, record)), "effect"), record)
+                source = None if not source_records else {'sourceId': source_records[png_path],
+                    'rect': [int(record['x']), int(record['y']), int(record['w']), int(record['h'])],
+                    'transform': {'operation': 'atlas-untrim', 'atlasSource': source_records[atlas_path], 'atlasEntry': record['n'], 'trim': copy.deepcopy(record)}}
+                source_ref = {'source': source['sourceId'], **{key: copy.deepcopy(value) for key, value in source.items() if key != 'sourceId'}} if source is not None else None
+                cell_record = dict(record, sourceRef=source_ref) if source_ref is not None else record
+                cells[record["n"]] = (self.add_asset(p, Path(record["n"]).name + ".png", png_bytes(atlas_crop(sheet, record)), "effect", source=source), cell_record)
             capability = []
             if parts.get("m"):
                 capability.append("包含暂未支持的 MovieClip 结构")
@@ -639,23 +778,55 @@ def native_commands(frames, parts, cells, group, tick, matrix=(1, 0, 0, 1, 0, 0)
                 raise StudioError("特效引用的贴图不存在: " + path)
             aid, record = cells[path]
             result.append({"asset": aid, "matrix": list(m), "alpha": a, "fx": record.get("fx", 0), "fy": record.get("fy", 0), "blend": mode, "color": packed, "colorTransform": list(color), "channel":"ch_"+hashlib.sha256(str(instance_path).encode()).hexdigest()[:16], "channelOrder":list(instance_path)})
+            if record.get('sourceRef'):
+                result[-1]['sourceRef'] = copy.deepcopy(record['sourceRef'])
         else:
             raise StudioError("该特效含未支持的 MovieClip")
     return result
 
 
-def validate(p):
+def validate_draft(p):
+    """Validate safe editable data, keeping unfinished native rows unchanged."""
     validate_declarations(p)
-    from project_storage import check_format
-    check_format(p)
     from spatial_preview import validate_preview_stage
     validate_preview_stage(p)
+    from atlas_optimizer import validate_options
+    from character_dependencies import validate as validate_dependencies
+    validate_options(p.get('atlasOptimization'))
+    validate_dependencies(p)
+    from author_gameplay import validate as validate_author_gameplay
+    validate_author_gameplay(p)
+    from mechanics_todo import validate as validate_mechanics_todo
+    validate_mechanics_todo(p)
+    from source_intake import validate_source_intake
+    from action_presets import validate_action_contracts
+    from character_audit import validate as validate_audit
+    from audio_review import profile
+    from degree_editor import validate as validate_degrees
+    from entry_layout import report as entry_report
+    validate_source_intake(p)
+    validate_action_contracts(p)
+    validate_audit(p)
+    from skill_preview import validate_preview
+    validate_preview(p)
+    profile(p, 'voice'); profile(p, 'sfx')
+    validate_degrees(p)
+    entry_report(p)
+    from project_storage import check_format
+    check_format(p)
     from native_gameplay import validate_native
-    validate_native(p.get("nativeGameplay"))
+    validate_native(p.get("nativeGameplay"), draft=True)
     if p.get("schema") != "starpoint-character-studio-v1":
         raise StudioError("工程格式不受支持")
     p["productionBrief"] = normalize_production_brief(p)
     identifier(p.get("id"))
+    identity = p.get("identity")
+    if not isinstance(identity, dict):
+        raise StudioError("角色设定必须是对象")
+    code = identity.get("code", "")
+    if (not isinstance(code, str) or len(code) > 100 or code in (".", "..")
+            or any(char in code for char in "/\\:") or any(ord(char) < 32 for char in code)):
+        raise StudioError("角色资源代号必须为安全的单段标识，不能包含路径")
     if "gameplay" in p:
         normalize_gameplay(p)
     if not isinstance(p.get("assets"), dict) or len(p["assets"]) > 10000:
@@ -740,6 +911,17 @@ def validate(p):
         identifier(voice["id"])
         if not p["assets"].get(voice.get("asset"), {}).get("mime", "").startswith("audio/"):
             raise StudioError("语音引用无效")
+    validate_declarations(p)
+    return True
+
+
+def validate(p):
+    """Require client-ready technical rows for compilation and native use."""
+    validate_draft(p)
+    from native_gameplay import validate_native
+    validate_native(p.get("nativeGameplay"))
+    if not re.fullmatch(r"[a-z][a-z0-9_]{1,70}", p["identity"].get("code", "")):
+        raise StudioError("制作方待分配有效的角色资源代号；草稿仍可保存和导出")
     return True
 
 
@@ -833,6 +1015,23 @@ def project_checks(p):
             if not clips and not frames:
                 add("animation_frames_missing", "todo", group, name + "没有可播放画面", id=aid,
                     position=name, location=f"{group}.{aid}", fix="添加所选画稿或导入可播放的原生时间轴")
+    from native_gameplay import native_readiness_issues
+    for native_issue in native_readiness_issues(p.get("nativeGameplay")):
+        item = make_issue(native_issue["code"], native_issue["level"], native_issue["page"],
+                          native_issue["text"], position=native_issue.get("path", "") or "原生接入", location=native_issue.get("path", ""),
+                          fix=native_issue.get("nextStep", ""), blocking="compile" in native_issue.get("blocks", []))
+        item.update(native_issue)
+        issues.append(item)
+    if not re.fullmatch(r"[a-z][a-z0-9_]{1,70}", p.get("identity", {}).get("code", "")):
+        add("resource_code_pending", "warning", "identity",
+            "制作方待分配角色资源代号；当前草稿设定保留，作者无需填写技术代号",
+            position="身份与设定 → 角色资源代号", location="identity.code", fix="接入方分配有效资源标识后再编译", blocking=True)
+        issues[-1].update(owner="maker", category="technical_readiness", blocks=["compile"])
+    from degree_editor import validate as degree_rows
+    for row in degree_rows(p):
+        if row.get("asset") and not row.get("safeMaskAsset"):
+            add("degree_mask_pending", "warning", "degrees", "铭牌安全区待核：" + row.get("name", row["id"]),
+                position="可佩戴铭牌 → " + row["id"], fix="提供实际框层和内框 Alpha 遮罩及依据；不会自动裁切原稿")
     declarations = declaration_report(p)
     issues.extend(declarations["issues"])
     # Share the compiler's intent/geometry checks without reading source pixels.
@@ -872,6 +1071,45 @@ def project_checks(p):
         "游戏接入待完成：角色与技能数据、平台纹理、存档兼容及真机验收由制作方确认",
         position="身份与设定 → 游戏接入", location="identity",
         fix="由制作方完成游戏接入与目标设备验收；离线候选和预览不等于已发布")
+    # Author-provided reuse/derivation intent resolves author work, not maker
+    # integration. Preserve the unified codes and compile blockers while moving
+    # only the matching missing-art work to maker review.
+    from production_brief import author_guidance
+    guidance = author_guidance(p)
+    intents = {(row["kind"], row["id"]): row for row in guidance["rows"]}
+
+    def intent_resolved(keys, *, require_rows=False):
+        rows = [intents[key] for key in keys if key in intents and intents[key]["required"]]
+        return (bool(rows) or not require_rows) and all(row["authorComplete"] for row in rows)
+
+    resource_keys = {
+        "animations_missing": ["pixel_idle", "pixel_move", "pixel_attack", "pixel_special"],
+        "effects_missing": ["skill_projectile", "skill_hit", "pf_frames"],
+    }
+    for item in issues:
+        code = item["code"]
+        resolved = False
+        if code in ("portrait_missing", "ui_images_missing"):
+            prefix = "portrait" if code == "portrait_missing" else "detail"
+            resolved = intent_resolved([("resources", prefix + "_" + item["id"])])
+        elif code == "candidate_visual_missing":
+            resolved = not guidance["authorPending"]
+        elif code in resource_keys:
+            resolved = intent_resolved([("resources", key) for key in resource_keys[code]])
+        elif code in ("voices_missing", "sounds_missing"):
+            kind = "voices" if code == "voices_missing" else "sounds"
+            resolved = intent_resolved([key for key in intents if key[0] == kind], require_rows=kind == "sounds")
+        elif code == "animation_frames_missing":
+            anim = next((anim for group in ("animations", "effects") for anim in p.get(group, [])
+                         if isinstance(anim, dict) and anim.get("id") == item["id"]), {})
+            slot = anim.get("slot")
+            key = "pixel_idle" if slot in ("neutral", "ghost_neutral") else "pixel_move" if slot in ("walk_front", "walk_back") else "pixel_attack" if slot in ("attack_initial", "attack_charge", "attack_finish", "into_coffin", "kachidoki") else "pixel_special"
+            keys = [key] if item["page"] == "animations" else ["skill_projectile", "skill_hit"]
+            resolved = intent_resolved([("resources", key) for key in keys])
+        if resolved:
+            item.update(level="warning", owner="maker")
+            item["summary"] = "制作方待派生 / 核验：" + item["summary"]
+            item["text"] = "制作方待派生 / 核验：" + item["text"]
     brief = p.get("productionBrief") or default_production_brief()
     return {"issues": issues, "assets": len(p.get("assets", {})), "animations": len(p.get("animations") or []),
             "effects": len(p.get("effects") or []), "voices": len(p.get("voices") or []),

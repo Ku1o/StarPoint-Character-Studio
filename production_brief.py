@@ -27,6 +27,25 @@ WORKFLOW_STATUS = {key for key, _, _ in WORKFLOW_STAGES}
 ITEM_STATUS = ("missing", "provided", "reuse_official", "needs_review", "not_applicable")
 VOICE_SOURCE = ("new_recording", "reuse_official", "to_generate", "not_applicable")
 NATIVE_SUPPORT = ("native_supported", "client_adaptation", "needs_verification", "unknown")
+AUTHOR_POLICY_STATES = (
+    ("unmarked", "直接填写或提供文件"),
+    ("needs_help", "请协助制作"), ("cannot_provide", "暂时无法提供"),
+    ("explicit_reuse", "明确复用"), ("maker_derive", "由母版派生"),
+    ("not_applicable", "不适用并说明理由"), ("maker_review", "请制作方确认"),
+    ("author_pending", "稍后补充"),
+)
+
+
+def _author_policy():
+    return {"state": "unmarked", "reason": "", "reference": ""}
+
+
+def _normalize_author_policy(value):
+    result = _merge_record(_author_policy(), value)
+    result["state"] = _choice(result["state"], {key for key, _ in AUTHOR_POLICY_STATES}, "作者责任声明")
+    for key in ("reason", "reference"):
+        result[key] = _text(result[key], 4000)
+    return result
 
 
 def _text(value="", limit=12000):
@@ -65,6 +84,7 @@ def _plan(label=""):
         "previewReference": "",
         "makerNotes": "",
         "label": label,
+        "authorPolicy": _author_policy(),
     }
 
 
@@ -87,6 +107,7 @@ def _resource(key, label, group, *, required=True, form="both", expected="", fra
         "transparentBackground": "",
         "frameHint": frame_hint,
         "notes": "",
+        "authorPolicy": _author_policy(),
     }
 
 
@@ -108,6 +129,8 @@ def _voice(key, label, usage, *, form="single", required=True, pair=None):
         "filename": "",
         "encoding": "",
         "assetId": "",
+        "entry": "",
+        "authorPolicy": _author_policy(),
         "notes": "",
     }
 
@@ -181,6 +204,7 @@ def default_production_brief():
     return {
         "schema": SCHEMA,
         "version": VERSION,
+        "authorPolicy": {"voiceMode": "unmarked", "voiceReason": "", "voiceReference": "", "identity": {}},
         "workflow": {"status": "author_package", "statusNote": "", "handoff": handoff},
         "author": {
             "characterName": "", "title": "", "element": "火", "role": "", "race": "",
@@ -234,6 +258,15 @@ def normalize_production_brief(project_or_brief):
     result.update(copy.deepcopy(supplied))
     result["schema"] = SCHEMA
     result["version"] = VERSION
+    policy = _merge_record(base["authorPolicy"], supplied.get("authorPolicy", {}))
+    policy["voiceMode"] = _choice(policy["voiceMode"], ("unmarked", "custom", "none", "reuse"), "配音意图")
+    for key in ("voiceReason", "voiceReference"):
+        policy[key] = _text(policy[key], 4000)
+    identity_policies = policy.get("identity", {})
+    if not isinstance(identity_policies, dict):
+        raise ValueError("角色信息协助说明必须是对象")
+    policy["identity"] = {key: _normalize_author_policy(value) for key, value in identity_policies.items()}
+    result["authorPolicy"] = policy
 
     workflow = _merge_record(base["workflow"], supplied.get("workflow", {}))
     workflow["status"] = _choice(workflow.get("status"), WORKFLOW_STATUS, "制作状态")
@@ -261,11 +294,15 @@ def normalize_production_brief(project_or_brief):
     supplied_plans = supplied.get("plans", {})
     if not isinstance(supplied_plans, dict):
         raise ValueError("能力填写项必须是对象")
+    for key, value in supplied_plans.items():
+        if key not in plans:
+            plans[key] = copy.deepcopy(value)
     for key in ("activeSkill", "pf", "leader"):
         plans[key] = _merge_record(plans[key], supplied_plans.get(key, {}))
         plans[key]["nativeSupport"] = _choice(plans[key].get("nativeSupport"), NATIVE_SUPPORT, "原生机制支持")
+        plans[key]["authorPolicy"] = _normalize_author_policy(plans[key].get("authorPolicy", {}))
         for field in base["plans"][key]:
-            if field != "nativeSupport":
+            if field not in ("nativeSupport", "authorPolicy"):
                 plans[key][field] = _text(plans[key][field], 12000)
     abilities = supplied_plans.get("abilities", [])
     if not isinstance(abilities, list):
@@ -282,8 +319,9 @@ def normalize_production_brief(project_or_brief):
         item = _merge_record(base["plans"]["abilities"][slot - 1], supplied_by_slot.get(slot, {}))
         item["slot"] = slot
         item["nativeSupport"] = _choice(item.get("nativeSupport"), NATIVE_SUPPORT, "原生机制支持")
+        item["authorPolicy"] = _normalize_author_policy(item.get("authorPolicy", {}))
         for field in base["plans"]["abilities"][slot - 1]:
-            if field not in ("slot", "nativeSupport"):
+            if field not in ("slot", "nativeSupport", "authorPolicy"):
                 item[field] = _text(item[field], 12000)
         plans["abilities"].append(item)
     result["plans"] = plans
@@ -342,6 +380,7 @@ def normalize_production_brief(project_or_brief):
 
     resources = normalize_list("resources", base["resources"], "资源清单")
     for item in resources:
+        item["authorPolicy"] = _normalize_author_policy(item.get("authorPolicy", {}))
         item["status"] = _choice(item.get("status"), ITEM_STATUS, "资源状态")
         item["source"] = _text(item.get("source", ""), 200)
         if not isinstance(item.get("assetIds"), list) or len(item["assetIds"]) > 100:
@@ -354,9 +393,10 @@ def normalize_production_brief(project_or_brief):
     voices = normalize_list("voices", base["voices"], "语音清单")
     sounds = normalize_list("sounds", base["sounds"], "音效清单")
     for item in voices + sounds:
+        item["authorPolicy"] = _normalize_author_policy(item.get("authorPolicy", {}))
         item["status"] = _choice(item.get("status"), ITEM_STATUS, "语音状态")
         item["source"] = _choice(item.get("source"), VOICE_SOURCE, "语音来源")
-        for key, limit in (("textJapanese", 4000), ("dialect", 500), ("toneReference", 1000), ("volume", 100), ("duration", 100), ("filename", 260), ("encoding", 300), ("assetId", 100), ("notes", 8000)):
+        for key, limit in (("textJapanese", 4000), ("entry", 1000), ("dialect", 500), ("toneReference", 1000), ("volume", 100), ("duration", 100), ("filename", 260), ("encoding", 300), ("assetId", 100), ("notes", 8000)):
             item[key] = _text(item.get(key, ""), limit)
     result["voices"] = voices
     result["sounds"] = sounds
@@ -499,6 +539,143 @@ def _record_state(items, key="status"):
     return {item["id"]: item for item in items}
 
 
+AUTHOR_FIELDS = (("characterName", "角色名称"), ("title", "称号"), ("role", "职责 / 战斗定位"),
+                 ("race", "种族"), ("baseForm", "进化前形态"), ("evolvedForm", "进化后形态"))
+
+
+def text_guidance(brief):
+    """A text or a detailed assistance request can complete author intent only."""
+    rows = []
+    items = [("author", key, label, [brief["author"][key]], brief["authorPolicy"]["identity"].get(key, _author_policy()), True)
+             for key, label in AUTHOR_FIELDS]
+    items.extend(("plans", key, label, [brief["plans"][key]["name"], brief["plans"][key]["authorDescription"]],
+                  brief["plans"][key]["authorPolicy"], True)
+                 for key, label in (("activeSkill", "主动技能"), ("pf", "PF"), ("leader", "队长技")))
+    items.extend(("plans.abilities", str(index), plan["label"], [plan["name"], plan["authorDescription"]],
+                  plan["authorPolicy"], bool(plan["name"] or plan["authorDescription"] or plan["authorPolicy"]["state"] != "unmarked"))
+                 for index, plan in enumerate(brief["plans"]["abilities"]))
+    for kind, key, label, values, policy, required in items:
+        state = policy["state"]
+        supplied = all(value.strip() for value in values)
+        declared = state not in ("unmarked", "author_pending") and bool(policy["reason"].strip())
+        if state in ("explicit_reuse", "maker_derive"):
+            declared = declared and bool(policy["reference"].strip())
+        complete = supplied or declared
+        pending = state != "unmarked"
+        path = "productionBrief." + kind + "." + key
+        problems = []
+        if pending:
+            problems.append({"level": "warning" if declared else "todo", "page": "production", "path": path + ".authorPolicy",
+                             "owner": "maker" if declared else "author", "code": "text_assistance" if declared else "text_reason_missing",
+                             "text": f"{label}：{dict(AUTHOR_POLICY_STATES)[state]}，制作方待确认" if declared else f"{label}请补充具体理由与希望协助的内容",
+                             "nextStep": "说明希望的结果、无法提供的原因与已有参考；声明不会自动生成玩法或资源。"})
+        rows.append({"kind": kind, "id": key, "label": label, "path": path, "required": required, "state": state,
+                     "reason": policy["reason"], "reference": policy["reference"], "authorComplete": complete,
+                     "makerPending": pending, "integrationVerified": False, "issues": problems})
+    return rows
+
+
+def author_guidance(project):
+    """Describe author obligations and maker review from the brief's row schema.
+
+    ``authorComplete`` means the author has supplied a usable intent/declaration.
+    It never means a resource has passed native integration.
+    """
+    brief = normalize_production_brief(project)
+    assets = project.get("assets", {}) if isinstance(project.get("assets"), dict) else {}
+    rows = []
+    global_voice = brief["authorPolicy"]
+    for kind in ("resources", "voices", "sounds"):
+        noun = {"resources": "资源", "voices": "语音", "sounds": "音效"}[kind]
+        for index, item in enumerate(brief[kind]):
+            policy = item["authorPolicy"]
+            state, reason, reference = (policy[key].strip() for key in ("state", "reason", "reference"))
+            status = item["status"]
+            path = f"productionBrief.{kind}.{index}"
+            problems = []
+            author_complete = False
+            maker_pending = False
+
+            def issue(code, text, owner="maker", field="status", level="warning", next_step=""):
+                problems.append({"code": code, "level": level, "page": "production", "id": item["id"],
+                                 "path": path + "." + field, "owner": owner, "text": text,
+                                 "nextStep": next_step or "补充此项说明，或与制作方确认可复用、可派生及不适用范围。"})
+
+            ids = item.get("assetIds", []) if kind == "resources" else ([item["assetId"]] if item["assetId"] else [])
+            missing_ids = [aid for aid in ids if aid not in assets]
+            wrong_type = [aid for aid in ids if aid in assets and isinstance(assets[aid], dict)
+                          and assets[aid].get("mime") and not assets[aid]["mime"].startswith("image/" if kind == "resources" else "audio/")]
+            supplied = status in ("provided", "reuse_official")
+            if supplied:
+                maker_pending = True
+                author_complete = bool(ids) and not missing_ids and not wrong_type
+                if not ids:
+                    issue("asset_unlinked", f"{item['label']}标记为已有，但尚未关联工程{'素材' if kind == 'resources' else '音频'}", field="assetIds" if kind == "resources" else "assetId", next_step="关联实际导入的素材；文件名和已有状态不能代替文件。")
+            if missing_ids:
+                author_complete = False
+                issue("asset_missing", f"{item['label']}引用了不存在的工程{'素材' if kind == 'resources' else '音频素材'}：{'、'.join(missing_ids)}", field="assetIds" if kind == "resources" else "assetId", next_step="重新导入原稿并关联有效素材；保留原稿文件。")
+            if wrong_type:
+                author_complete = False
+                issue("asset_type", f"{item['label']}关联的素材类型不符：{'、'.join(wrong_type)}", field="assetIds" if kind == "resources" else "assetId")
+            voice_content_required = kind == "voices" and (status == "provided" or (status == "reuse_official" and bool(ids)))
+            if voice_content_required:
+                for field, label in (("entry", "播放入口"), ("textJapanese", "完整台词")):
+                    if not item[field].strip():
+                        author_complete = False
+                        issue("voice_" + field + "_missing", f"{item['label']}缺少{label}", "author", field, "todo", "补充实际入口和完整原文；无台词需明确写出原因，不用删去句尾。")
+
+            # A declaration resolves intent only. It cannot hide a broken file
+            # which is still marked provided, nor an incomplete provided voice.
+            broken_provided = (status == "provided" and not author_complete) or bool(missing_ids or wrong_type) or (voice_content_required and not author_complete)
+            if state == "unmarked":
+                if status == "not_applicable":
+                    author_complete = bool(item["notes"].strip()) and not broken_provided
+                    if not author_complete:
+                        issue("reason_missing", f"{item['label']}已标为不适用，请说明原因", "author", "notes", "todo")
+                    maker_pending = True
+                elif status == "reuse_official":
+                    maker_pending = True
+                    issue("reuse_unmarked", f"{item['label']}复用范围未标注，待制作方确认", field="authorPolicy.reference")
+                elif status in ("missing", "needs_review"):
+                    author_complete = False
+                    if item["required"] and status == "missing":
+                        issue("author_unmarked", f"{noun}待补：{item['label']}", "author", "authorPolicy.state", "todo")
+                    elif status == "needs_review":
+                        maker_pending = True
+                        issue("maker_review", f"{noun}待核验：{item['label']}")
+                if kind == "voices" and status == "missing" and global_voice["voiceMode"] in ("none", "reuse"):
+                    valid = bool(global_voice["voiceReason"].strip()) and (global_voice["voiceMode"] == "none" or bool(global_voice["voiceReference"].strip()))
+                    problems = [p for p in problems if p["code"] != "author_unmarked"]
+                    author_complete = valid
+                    maker_pending = True
+                    if not valid:
+                        issue("voice_policy_incomplete", f"{item['label']}的整体配音声明缺少理由或复用来源", "author", "authorPolicy.state", "todo")
+                    else:
+                        state = "not_applicable" if global_voice["voiceMode"] == "none" else "explicit_reuse"
+                        reason, reference = global_voice["voiceReason"], global_voice["voiceReference"]
+            elif state == "author_pending":
+                author_complete = False
+                issue("author_pending", f"{noun}待补：{item['label']}", "author", "authorPolicy.state", "todo")
+            else:
+                maker_pending = True
+                declaration_valid = bool(reference) if state in ("explicit_reuse", "maker_derive") else bool(reason)
+                author_complete = declaration_valid and not broken_provided
+                if not declaration_valid:
+                    issue("declaration_incomplete", f"{item['label']}的{dict(AUTHOR_POLICY_STATES)[state]}声明缺少{'来源 / 母版' if state in ('explicit_reuse', 'maker_derive') else '理由'}", "author", "authorPolicy.reference" if state in ("explicit_reuse", "maker_derive") else "authorPolicy.reason", "todo")
+            if maker_pending and not any(p["owner"] == "maker" for p in problems):
+                issue("integration_pending", f"{item['label']}作者意图已记录，制作方接入待核", next_step="核对映射、派生结果与游戏实际入口；作者声明不等于原生验收。")
+            rows.append({"kind": kind, "id": item["id"], "label": item["label"], "path": path,
+                         "required": item["required"], "state": state, "reason": reason, "reference": reference,
+                         "status": status, "authorComplete": author_complete,
+                         "makerPending": maker_pending, "integrationVerified": False, "issues": problems})
+    text_rows = text_guidance(brief)
+    return {"schema": "starpoint-character-author-guidance-v1", "rows": rows, "textRows": text_rows,
+            "textAuthorPending": [row["path"] for row in text_rows if row["required"] and not row["authorComplete"]],
+            "policyStates": [{"value": key, "label": label} for key, label in AUTHOR_POLICY_STATES],
+            "authorPending": [row["path"] for row in rows if row["required"] and not row["authorComplete"]],
+            "makerPending": [row["path"] for row in rows if row["makerPending"]], "gameReady": False}
+
+
 def checks(project):
     """Return actionable issues without asserting missing work is complete."""
     brief = normalize_production_brief(project)
@@ -506,55 +683,41 @@ def checks(project):
     stage_order = [key for key, _, _ in WORKFLOW_STAGES]
     stage = stage_order.index(brief["workflow"]["status"])
     author = brief["author"]
-    for key, label in (("characterName", "角色名称"), ("title", "称号"), ("role", "职责 / 战斗定位"), ("race", "种族"), ("baseForm", "进化前形态"), ("evolvedForm", "进化后形态")):
-        if not author.get(key):
+    text_rows = {row["path"]: row for row in text_guidance(brief)}
+    for key, label in AUTHOR_FIELDS:
+        if not author.get(key, "").strip() and not text_rows["productionBrief.author." + key]["authorComplete"]:
             issues.append({"level": "todo", "page": "production", "text": f"作者填写包缺少{label}"})
     for plan_key, label in (("activeSkill", "主动技能"), ("pf", "PF"), ("leader", "队长技")):
-        if not brief["plans"][plan_key]["name"]:
+        complete = text_rows["productionBrief.plans." + plan_key]["authorComplete"]
+        if not brief["plans"][plan_key]["name"].strip() and not complete:
             issues.append({"level": "todo", "page": "production", "text": f"{label}尚未填写名称"})
-        if not brief["plans"][plan_key]["authorDescription"]:
+        if not brief["plans"][plan_key]["authorDescription"].strip() and not complete:
             issues.append({"level": "todo", "page": "production", "text": f"{label}尚未填写自然语言描述"})
         if stage >= 1 and brief["plans"][plan_key]["nativeSupport"] in ("unknown", "needs_verification"):
             issues.append({"level": "warning", "page": "production", "text": f"{label}的原生机制支持范围待制作方核验"})
-    for plan in brief["plans"]["abilities"]:
+    for index, plan in enumerate(brief["plans"]["abilities"]):
         if plan["authorDescription"] or plan["name"]:
-            if not plan["name"]:
+            complete = text_rows[f"productionBrief.plans.abilities.{index}"]["authorComplete"]
+            if not plan["name"] and not complete:
                 issues.append({"level": "todo", "page": "production", "text": f"能力 {plan['slot']} 只有说明，缺少名称"})
-            if not plan["authorDescription"]:
+            if not plan["authorDescription"] and not complete:
                 issues.append({"level": "todo", "page": "production", "text": f"能力 {plan['slot']} 只有名称，缺少自然语言说明"})
             if stage >= 1 and plan["nativeSupport"] in ("unknown", "needs_verification"):
                 issues.append({"level": "warning", "page": "production", "text": f"能力 {plan['slot']} 的原生机制支持范围待制作方核验"})
-    assets = project.get("assets", {}) if isinstance(project.get("assets", {}), dict) else {}
-    for item in brief["resources"]:
-        if item["required"] and item["status"] == "missing":
-            issues.append({"level": "todo", "page": "production", "text": f"资源待补：{item['label']}", "id": item["id"]})
-        if item["status"] == "needs_review":
-            issues.append({"level": "warning", "page": "production", "text": f"资源待核验：{item['label']}", "id": item["id"]})
-        if item["status"] in ("provided", "reuse_official") and not item["assetIds"]:
-            issues.append({"level": "warning", "page": "production", "text": f"{item['label']}标记为已有，但尚未关联工程素材", "id": item["id"]})
-        missing_assets = [aid for aid in item["assetIds"] if aid not in assets]
-        if missing_assets:
-            issues.append({"level": "warning", "page": "production", "text": f"{item['label']}引用了不存在的工程素材：{'、'.join(missing_assets)}", "id": item["id"]})
+    guidance = author_guidance(project)
+    for row in guidance["textRows"]:
+        issues.extend(row["issues"])
+    for row in guidance["rows"]:
+        issues.extend(row["issues"])
     voices = brief["voices"]
-    for kind, items in (("语音", voices), ("音效", brief["sounds"])):
-      for item in items:
-          if item["required"] and item["status"] == "missing":
-              issues.append({"level": "todo", "page": "production", "text": f"{kind}待补：{item['label']}", "id": item["id"]})
-          if item["status"] == "needs_review":
-              issues.append({"level": "warning", "page": "production", "text": f"{kind}待核验：{item['label']}", "id": item["id"]})
-          if item["status"] in ("provided", "reuse_official") and not item.get("assetId"):
-              issues.append({"level": "warning", "page": "production", "text": f"{item['label']}已标记完成，但还没有关联工程音频", "id": item["id"]})
-          if item["required"] and item["status"] == "not_applicable" and not item.get("notes"):
-              issues.append({"level": "warning", "page": "production", "text": f"{item['label']}已标为不适用，请说明原因", "id": item["id"]})
-          if item["assetId"] and item["assetId"] not in assets:
-              issues.append({"level": "warning", "page": "production", "text": f"{item['label']}引用了不存在的工程音频素材：{item['assetId']}", "id": item["id"]})
+    voice_rows = {row["id"]: row for row in guidance["rows"] if row["kind"] == "voices"}
     pairs = {}
     for item in voices:
         if item.get("pairId"):
             pairs.setdefault(item["pairId"], []).append(item)
     for pair, items in pairs.items():
         if len(items) > 1:
-            missing = [item["label"] for item in items if item["status"] == "missing"]
+            missing = [item["label"] for item in items if item["status"] == "missing" and not voice_rows[item["id"]]["authorComplete"]]
             if missing:
                 issues.append({"level": "warning", "page": "production", "text": f"进化前后语音未成对：{'、'.join(missing)}"})
     for item in brief["review"]:
@@ -575,6 +738,90 @@ def checks(project):
     return issues
 
 
+def _md(value):
+    return str(value).replace("|", "\\|").replace("\r", "").replace("\n", "<br>")
+
+
+def author_submission_form(project=None):
+    """Generate the submission worksheet from the same schema as checks/UI."""
+    project = project or {"productionBrief": default_production_brief(), "assets": {}}
+    brief = normalize_production_brief(project)
+    lines = ["# 素材提交填写表", "", "空白或未标注表示尚未说明，不等于完成或不适用。",
+             "作者填写角色意图；游戏编号、DSL、封装、图集和版本链由制作方核验。", "", "## 基本信息", "",
+             "| 项目 | 填写 |", "| --- | --- |"]
+    for key, label in (("characterName", "角色名"), ("title", "角色资料头衔（与玩家铭牌分开）"), ("element", "属性"), ("role", "职责 / 战斗定位"), ("race", "种族"), ("baseForm", "基础形态"), ("evolvedForm", "进化形态 / 复用")):
+        lines.append(f"| {label} | {_md(brief['author'][key])} |")
+    lines.extend(["", "## 玩法", "", "| 项目 | 名称 | 自然语言意图 | 对象 / 触发 / 数值 / 时长 | 待确认 |", "| --- | --- | --- | --- | --- |"])
+    for plan in [brief["plans"][key] for key in ("activeSkill", "pf", "leader")] + brief["plans"]["abilities"]:
+        details = " / ".join(plan[key] for key in ("target", "trigger", "multiplier", "duration") if plan[key])
+        lines.append(f"| {_md(plan['label'])} | {_md(plan['name'])} | {_md(plan['authorDescription'])} | {_md(details)} | {_md(plan['verificationItems'])} |")
+    lines.extend(["", "## 素材、语音与音效", "", "状态选择：" + " / ".join(label for _, label in AUTHOR_POLICY_STATES) + "。",
+                  "明确复用请写来源；制作方可派生请选择母版或写参考名称；无法提供可说明具体困难与希望协助的内容。",
+                  "整体配音意图：" + _md(brief["authorPolicy"]["voiceMode"]) + "；理由：" + _md(brief["authorPolicy"]["voiceReason"]) + "；复用来源：" + _md(brief["authorPolicy"]["voiceReference"]), "",
+                  "| 用途 / schema ID | 制作所需 | 作者责任声明 | 原稿 / 母版 / 复用来源 | 理由 / 待确认 |", "| --- | --- | --- | --- | --- |"])
+    for kind in ("resources", "voices", "sounds"):
+        for item in brief[kind]:
+            policy = item["authorPolicy"]
+            lines.append(f"| {_md(item['label'])} / `{kind}.{item['id']}` | {'需要明确说明' if item['required'] else '按需选填'} | {dict(AUTHOR_POLICY_STATES)[policy['state']]} | {_md(policy['reference'])} | {_md(policy['reason'])} |")
+    lines.extend(["", "## 角色与玩法协助说明", "", "| 项目 | 声明 | 详细理由 / 希望的结果 | 参考 | 当前状态 |", "| --- | --- | --- | --- | --- |"])
+    for row in text_guidance(brief):
+        if row["state"] != "unmarked":
+            lines.append(f"| {_md(row['label'])} | {dict(AUTHOR_POLICY_STATES)[row['state']]} | {_md(row['reason'])} | {_md(row['reference'])} | {'意图已说明，制作方待核' if row['authorComplete'] else '说明待补充'} |")
+    lines.extend(["", "## 动作与演出意图", "", "原精灵图 / 每格尺寸 / 格号起点：____；身体足底或悬浮点：____。", "",
+                  "| 动作 | 源格号 / 文件 | 时长 / 循环 | 返回动作 | 纯本体 / 合成 / 可派生范围 |", "| --- | --- | --- | --- | --- |",
+                  "| 停留 / 前后移动 | | | | |", "| 施法起手 / 结束恢复 | | | | |", "| 倒下 / 灵魂 / 复活 / 特殊形态 | | | | |", "",
+                  "技能效果请说明起手、命中、结束的顺序，跟随角色、固定场地或敌人绑定；表现区域与伤害区域分开。", "",
+                  "## 台词与原声", "", "| 用途 / 形态 / 条件 | 实际播放入口 | 完整原文 | 原声文件 | 可修改范围 |", "| --- | --- | --- | --- | --- |"])
+    for item in brief["voices"]:
+        lines.append(f"| {_md(item['label'])} | {_md(item['entry'])} | {_md(item['textJapanese'])} | {_md(item['filename'])} | {_md(item['notes'])} |")
+    lines.extend(["", "获取全文保留词义与手动换行；排版候选需展示差异，近似预览不能代替首次获取画面。", "",
+                  "## 玩家铭牌（独立选填）", "", "角色资料头衔不会变成可佩戴铭牌。无需求可声明不适用；多款按需增行。", "",
+                  "| 名称 | 字形 / 配色 / 标志 | 草图 / 母版 | 可调整范围 |", "| --- | --- | --- | --- |", "| | | | |", "",
+                  "## 提交前核对", "", "- [ ] 原稿与可编辑源文件保留，候选不覆盖原稿。", "- [ ] 每项用途、复用来源、派生母版或不适用理由已说明。",
+                  "- [ ] 动作格号、身体定位、循环和恢复意图已说明。", "- [ ] 已提供完整台词与入口，或明确无配音；音效另填。", "- [ ] 工程导出与制作交接一并保留，待核范围列明。", ""])
+    return "\n".join(lines)
+
+
+def author_readme(project=None):
+    """Generate author instructions and current obligations, without native claims."""
+    project = project or {"productionBrief": default_production_brief(), "assets": {}}
+    guidance = author_guidance(project)
+    lines = ["# 稿主素材准备指南", "", "先说明角色意图并保留原稿。制作方处理游戏编号、DSL、PNG 封装、声音编码与版本链。", "",
+             "## 从这里开始", "", "1. 填角色名、资料头衔、属性、形态、定位和玩法意图。", "2. 导入原稿并按用途关联；保留原文件名、原目录与可编辑源文件。",
+             "3. 一张母版可派生多个 UI 小图；进化可明确复用，不必为每个用途重复绘制。", "4. 在每项声明中选择复用、可派生、不适用、请协助制作或暂时无法提供，并说明理由与参考。角色和玩法未定也可这样交接。",
+             "5. 没有配音时填写整体无配音和理由；音效单独说明。已有声音仍须有实际入口和完整台词。", "6. 导出工程和制作交接，核对下面的作者补充与制作方待核。", "",
+             "## 状态说明", "", "| 作者责任声明 | 下一步 |", "| --- | --- |"]
+    meanings = {"unmarked": "尚未说明；旧工程缺省也保持未标注，不会自动通过。", "author_pending": "作者补充原稿或意图；可改为明确复用、可派生或不适用并说明。",
+                "explicit_reuse": "写清官方角色 / 资源、已有形态或工程素材来源；制作方核对映射和接入。", "maker_derive": "选择母版或写参考名称与可调整范围；制作方给派生结果和预览。",
+                "not_applicable": "写清无需求或不适用理由；制作方仍核对必要入口。", "maker_review": "写出具体待核问题；制作方确认实现范围。",
+                "needs_help": "说明期望结果、希望制作方协助的部分及已有参考；只完成作者意图，不表示已收到素材。",
+                "cannot_provide": "说明暂时无法提供的原因、可接受的替代方案及已有参考；制作方确认后续安排，资源保持缺失或待核。"}
+    for key, label in AUTHOR_POLICY_STATES:
+        lines.append(f"| {label} | {meanings[key]} |")
+    lines.extend(["", "## 角色与玩法协助说明", ""])
+    for row in guidance["textRows"]:
+        if row["state"] != "unmarked":
+            lines.append(f"- {row['label']}：{dict(AUTHOR_POLICY_STATES)[row['state']]}；理由：{row['reason']}；参考：{row['reference']}；制作方待核。")
+            for issue in row["issues"]:
+                lines.append(f"- `{issue['path']}`：{issue['text']}。{issue['nextStep']}")
+    lines.extend(["", "作者说明完成与制作接入通过分别记录；复用、可派生、不适用和已提供都不会自动证明游戏可用。", "",
+                  "## 原稿与动作", "", "原始像素尺寸、每格大小、格号从 0 还是 1 开始、动作用途都要说明。逐帧记录顺序、时长、循环、返回状态和身体足底。",
+                  "纯本体与含召唤物 / 附属物的合成帧分开；未画动作明确标注。旧角色的格号或配方不能作为所有角色的默认。", "",
+                  "## 演出与声音", "", "起手、命中与结束分别说明位置、跟随对象与时序。表现区域和实际伤害判定分开；编排预览不代表原生脚本或实战通过。",
+                  "保留最高质量原声和完整句尾。制作方按同声道参考检查编码后响度、真峰、削波和时长；试听发声不代表全文或入口验收。",
+                  "获取台词保留全文和手动换行，排版候选展示差异，不默默删词；近似气泡预览仍需实际首次获取验证。", "",
+                  "## 两种称号", "", "角色资料头衔与可佩戴玩家铭牌分开。铭牌按需求选填，可先交草图；最终 320×50 透明 RGBA，还需 160×25 缩小预览和实际内框核对。", "",
+                  "## 当前清单", "", "| 用途 / 位置 | 作者责任声明 | 作者说明 | 制作方 |", "| --- | --- | --- | --- |"])
+    for row in guidance["rows"]:
+        lines.append(f"| {_md(row['label'])} / `{row['path']}` | {dict(AUTHOR_POLICY_STATES)[row['state']]} | {'已说明' if row['authorComplete'] else '待补充 / 未标注'} | {'接入待核' if row['makerPending'] else '尚未接收'} |")
+    lines.extend(["", "## 具体问题与下一步", ""])
+    for row in guidance["rows"]:
+        for issue in row["issues"]:
+            lines.append(f"- `{issue['path']}`：{issue['text']}。{issue['nextStep']}")
+    lines.extend(["", "工程、原稿接收身份、派生映射、动作声明、自检、编译报告与未覆盖项一并交接。gameReady 保持 false，直到对应接入证据满足。", ""])
+    return "\n".join(lines)
+
+
 def export_handoff(project):
     """Export a small JSON handoff that contains no binary assets or credentials."""
     brief = normalize_production_brief(project)
@@ -584,6 +831,9 @@ def export_handoff(project):
         "project": {"id": project.get("id", ""), "name": project.get("name", ""), "revision": project.get("revision", 0)},
         "identity": copy.deepcopy(project.get("identity", {})),
         "productionBrief": brief,
+        "authorGuidance": author_guidance(project),
+        "authorGuide": author_readme(project),
+        "authorSubmissionForm": author_submission_form(project),
         "legacyGameplay": copy.deepcopy(project.get("gameplay", {})),
         "nativeGameplayPresent": bool(project.get("nativeGameplay")),
         "resourceSummary": {

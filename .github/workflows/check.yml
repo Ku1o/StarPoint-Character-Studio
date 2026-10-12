@@ -19,5 +19,6 @@ jobs:
           node-version: '22'
       - run: node --test tests/preview_layout.test.js
       - run: node --test tests/spatial_geometry.test.js
+      - run: node --test tests/test_no_code_audio_ui.js
       - name: Check distributable source
         run: python distribution_sources.py --output build/source-check

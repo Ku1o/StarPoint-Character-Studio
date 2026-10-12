@@ -60,6 +60,10 @@ def atlas_data(store, p, group, animation=None):
     else:
         files, _ = compile_effect(store, p, anim, code)
         label = anim["name"] + " · 实际编译图集"
+    from studio_compile import _configured_preview_files
+    files, optimization = _configured_preview_files(store, p, files)
+    if optimization['enabled']:
+        label += " · 无损优化已核验" if any(b['status'] == 'optimized' for b in optimization['selectedBundles']) else " · 保留原布局"
     atlas_path = next((k for k in files if k.endswith(".atlas.amf3.deflate")), None)
     if not atlas_path:
         raise StudioError("当前动作没有可编译图片")

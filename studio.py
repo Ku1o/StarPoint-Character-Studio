@@ -105,6 +105,9 @@ def create_server(root, port=0, templates=None, definitions=None, parent_origin=
                     self.respond(composer_catalog())
                 elif url.path == "/api/ability-library":
                     self.respond(ability_library.query(arg('kind'),arg('q'),int(arg('offset') or 0),arg('key') or None))
+                elif url.path == "/api/author-gameplay-catalog":
+                    from author_gameplay import catalog
+                    self.respond(catalog())
                 elif url.path == "/api/native-gameplay":
                     self.respond(describe_native(store.load(arg("id")).get("nativeGameplay")))
                 elif url.path == "/api/project":
@@ -123,12 +126,22 @@ def create_server(root, port=0, templates=None, definitions=None, parent_origin=
                     p = store.load(arg("id"))
                     self.respond(store.export(p["id"]), mime="application/zip", filename=p["name"] + ".wfchar.zip")
                 elif url.path == "/api/production-handoff":
-                    from production_brief import export_handoff
+                    from workshop_handoff import report as export_handoff
                     p = store.load(arg("id"))
-                    self.respond(json_bytes(export_handoff(p)), mime="application/json; charset=utf-8", filename=p["name"] + "-制作交接.json")
+                    self.respond(json_bytes(export_handoff(store, p)), mime="application/json; charset=utf-8", filename=p["name"] + "-制作交接.json")
+                elif url.path == '/api/degree-preview':
+                    from degree_editor import preview
+                    p = store.load(arg('id'))
+                    row = next((row for row in p.get('degrees', []) if row['id'] == arg('degree')), None)
+                    if row is None:
+                        raise StudioError('找不到这款铭牌')
+                    full, half, _ = preview(store, p, row)
+                    self.respond(half if arg('half') == '1' else full, mime='image/png')
                 elif url.path == "/api/compile-export":
                     raw, _ = compile_project(store, arg("id"))
                     self.respond(raw, mime="application/zip", filename="角色美术编译产物.zip")
+                elif url.path == '/atlas-workflow.js':
+                    self.respond((APP / 'web' / 'atlas-workflow.js').read_bytes(), mime='application/javascript')
                 elif url.path == "/api/portrait":
                     from portrait_editor import render, ui_name
                     raw = render(store, store.load(arg("id")), arg("form"), arg("slot"))
@@ -147,7 +160,7 @@ def create_server(root, port=0, templates=None, definitions=None, parent_origin=
                         self.respond(json_bytes(records), filename="atlas.json")
                     else:
                         self.respond(png_bytes(sheet), mime="image/png", filename="atlas.png")
-                elif url.path in ("/", "/index.html", "/app.js", "/compiled-preview.js", "/preview-layout.js", "/spatial-geometry.js", "/spatial-preview.js", "/spatial-preview.css", "/authoring-guide.js", "/template-library.js", "/audio-workbench.js", "/sound-preview.js", "/desktop-window.js", "/pixel-import.js", "/pixel-import.css", "/skill-workbench.js", "/skill-workbench.css", "/character-workflow.js", "/author-declarations.js", "/author-declarations.css", "/production-brief.js", "/production-brief.css", "/native-workbench.js", "/native-workbench.css", "/mod-host.js", "/editor-scroll.js", "/ability-picker.js", "/effect-channels.js", "/effect-channels.css", "/ability-composition.js", "/ability-composition.css", "/portrait-workbench.js", "/portrait-workbench.css", "/image-workbench.js", "/style.css", "/about-tool.js", "/about-tool.css"):
+                elif url.path in ('/', '/index.html', '/app.js', '/compiled-preview.js', '/preview-layout.js', '/spatial-geometry.js', '/spatial-preview.js', '/spatial-preview.css', '/authoring-guide.js', '/template-library.js', '/audio-workbench.js', '/sound-preview.js', '/desktop-window.js', '/pixel-import.js', '/pixel-import.css', '/skill-workbench.js', '/skill-workbench.css', '/character-workflow.js', '/author-declarations.js', '/author-declarations.css', '/production-brief.js', '/production-brief.css', '/native-workbench.js', '/native-workbench.css', '/mod-host.js', '/editor-scroll.js', '/ability-picker.js', '/effect-channels.js', '/effect-channels.css', '/ability-composition.js', '/ability-composition.css', '/portrait-workbench.js', '/portrait-workbench.css', '/image-workbench.js', '/style.css', '/about-tool.js', '/about-tool.css', '/creator-workflow.js', '/author-integration.js', '/workshop-upgrade.js', '/reference-preview.js'):
                     name = "index.html" if url.path == "/" else url.path.removeprefix("/")
                     self.respond((APP / "web" / name).read_bytes(), mime=mimetypes.guess_type(name)[0] or "text/plain")
                 elif url.path == "/favicon.ico":
@@ -172,6 +185,57 @@ def create_server(root, port=0, templates=None, definitions=None, parent_origin=
                     result = store.save(data)
                 elif self.path == "/api/upload":
                     result = store.upload(data["id"], data["files"])
+                elif self.path == '/api/source-intake':
+                    result = store.import_source_archive(data['id'], data['name'], base64.b64decode(data['data'], validate=True), data.get('revision'))
+                elif self.path == '/api/source-asset':
+                    from source_intake import source_intake_payload, verify_source_bytes
+                    from project_storage import safe_child
+                    with store.lock:
+                        p = store.load(data['id'])
+                        source = next((row for row in source_intake_payload(p)['sources'] if row['id'] == data['source']), None)
+                        if source is None:
+                            raise StudioError('原稿记录不存在')
+                        raw = safe_child(store.directory(p['id']), source['blob']).read_bytes()
+                        verify_source_bytes(source, raw)
+                        aid = store.add_asset(p, source['path'], raw, data.get('category', 'image'), source={'sourceId': source['id'], 'transform': {'operation': 'source-import'}})
+                        p['revision'] += 1
+                        store._write(p)
+                        result = {'project': p, 'asset': aid}
+                elif self.path == '/api/audio-review':
+                    from audio_review import project_report
+                    result = project_report(store, store.load(data['id']))
+                elif self.path == '/api/audio-candidate':
+                    from audio_review import create_candidate
+                    result = create_candidate(store, data['id'], data['revision'], data['asset'], data.get('kind', 'voice'))
+                elif self.path == '/api/entry-layout':
+                    from entry_layout import preview
+                    result = preview(data.get('original', ''), data.get('candidate'), **{key: data[key] for key in ('width', 'height', 'font_size', 'line_height') if key in data})
+                elif self.path == '/api/degree-check':
+                    from degree_editor import report
+                    result = report(store, store.load(data['id']))
+                elif self.path == '/api/character-audit':
+                    from character_audit import report
+                    result = report(store.load(data['id']))
+                elif self.path == '/api/atlas-optimization':
+                    _, compiled = compile_project(store, data['id'], optimize=True)
+                    result = {'sourceRevision': compiled['sourceRevision'],
+                              'atlasOptimization': compiled['atlasOptimization'],
+                              'dependencyClosure': compiled['dependencyClosure'],
+                              'characterAudit': compiled['characterAudit'], 'gameReady': False}
+                elif self.path == '/api/dependency-closure':
+                    from character_dependencies import analyze_project
+                    with store.lock:
+                        project = store.load(data['id'])
+                        closure = analyze_project(store, project)
+                        try:
+                            _, compiled = compile_project(store, data['id'], optimize=False)
+                        except ValueError as exc:
+                            closure['compiledCoverage'] = {'status': 'unavailable', 'reason': str(exc)}
+                        else:
+                            closure = compiled['dependencyClosure']
+                            closure['compiledCoverage'] = {'status': 'included'}
+                        result = {'sourceRevision': project['revision'],
+                                  'dependencyClosure': closure, 'gameReady': False}
                 elif self.path == "/api/portrait-render":
                     from portrait_editor import render
                     raw = render(store, store.load(data["id"]), data["form"], data["slot"], data.get("selection"))
@@ -194,6 +258,34 @@ def create_server(root, port=0, templates=None, definitions=None, parent_origin=
                 elif self.path == "/api/effect-channels":
                     from effect_channels import prepare
                     result=prepare(store,data["id"],data["revision"],data["effect"])
+                elif self.path == "/api/author-gameplay-preview":
+                    from author_gameplay import preview
+                    from dependency_assistance import build as assistance_report
+                    with store.lock:
+                        project = store.load(data["id"])
+                        result = preview(project, store=store)
+                        result['assistance'] = assistance_report(project, gameplay=result)
+                elif self.path == "/api/author-reuse-options":
+                    from author_reuse import catalog
+                    with store.lock:
+                        result = catalog(store, store.load(data['id']))
+                elif self.path == "/api/author-reference-preview":
+                    from reference_preview import preview
+                    with store.lock:
+                        project = store.load(data['id'])
+                        if project['revision'] != data['revision']:
+                            raise StudioError('工程已更新，请重新选择参考')
+                        result = preview(store, project, data['choice'], data['digest'])
+                elif self.path == "/api/mechanics-todo-update":
+                    from mechanics_todo import update
+                    result = update(store, data['id'], data['revision'], data['token'],
+                                    data['cardId'], data['stepId'], data['state'], data.get('note', ''))
+                elif self.path == "/api/author-gameplay-apply":
+                    from author_gameplay import apply
+                    result = apply(store, data["id"], data["revision"], data["token"], data.get("cardIds"))
+                elif self.path == "/api/author-gameplay-undo":
+                    from author_gameplay import undo
+                    result = undo(store, data["id"], data["revision"])
                 elif self.path == "/api/native-edit":
                     result = edit_native(store, data['id'], data['revision'], data['operation'], data.get('slot'), data.get('index'), data.get('spec'))
                 elif self.path == "/api/ability-row-draft":
@@ -211,7 +303,7 @@ def create_server(root, port=0, templates=None, definitions=None, parent_origin=
                 elif self.path == "/api/ability-library-append":
                     result = ability_library.append(store,data['id'],data['revision'],data['slot'],data['key'],data['fingerprint'],data.get('indices'))
                 elif self.path == "/api/import":
-                    result = store.import_archive(base64.b64decode(data["data"], validate=True))
+                    result = store.import_archive(base64.b64decode(data["data"], validate=True), data.get('name', 'imported-package.zip'))
                 elif self.path == "/api/upgrade-projects":
                     from project_storage import upgrade_projects
                     if not self.server.choose_project_directory:

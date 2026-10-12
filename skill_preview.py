@@ -30,7 +30,127 @@ def effect_path(logical):
     return f"effect/{folder}/decoded/{name}.parts.json"
 
 
+def author_to_world(declaration, position):
+    """A declared recipe is an offline conversion, never native acceptance.
+
+    No implicit canvas center, parts scale, or coordinate-axis convention is
+    supplied. The author retains both the original canvas and local anchor.
+    """
+    keys = ("canvas", "anchor", "partsScale", "source")
+    if not isinstance(declaration, dict) or any(not declaration.get(k) for k in keys) or not isinstance(declaration.get("source"), str):
+        return {"status": "unknown", "nativeVerified": False, "reason": "画布/锚点/parts.s/转换依据未完整声明"}
+    canvas, anchor, scale = declaration["canvas"], declaration["anchor"], declaration["partsScale"]
+    def pair(value):
+        return isinstance(value, list) and len(value) == 2 and all(isinstance(v, (float, int)) and not isinstance(v, bool) and math.isfinite(v) for v in value)
+    if not pair(canvas) or not pair(anchor) or not pair(position) or any(v <= 0 for v in canvas) or not isinstance(scale, (int, float)) or isinstance(scale, bool) or not math.isfinite(scale) or scale <= 0:
+        return {"status": "unknown", "nativeVerified": False, "reason": "转换声明数值无效"}
+    return {"status": "declared-offline", "canvas": canvas, "anchor": anchor, "partsScale": scale,
+            "authorPosition": position, "localWorldOffset": [scale * (p - a) for p, a in zip(position, anchor)],
+            "source": declaration["source"], "nativeVerified": False}
+
+
+def validate_preview(project):
+    """Optional metadata must not break old projects or invent subject enums."""
+    preview = project.get("skillPreview")
+    if preview is not None:
+        if not isinstance(preview, dict):
+            raise ValueError("skillPreview 必须是对象")
+        bindings = preview.get("subjectBindings", {})
+        if not isinstance(bindings, dict):
+            raise ValueError("skillPreview.subjectBindings 必须是对象")
+        for key, item in bindings.items():
+            if not isinstance(key, str) or not isinstance(item, dict):
+                raise ValueError("subjectBindings 需要字符串ID与声明对象")
+            for field in ("name", "source"):
+                if field in item and not isinstance(item[field], str):
+                    raise ValueError(f"subjectBindings.{field} 必须是字符串")
+        states = preview.get("actionStates", {})
+        if not isinstance(states, dict) or any(key in states and not isinstance(states[key], str) for key in ("normal", "cast", "restore", "source")):
+            raise ValueError("skillPreview.actionStates需要动作ID及来源字符串")
+    for effect in project.get("effects", []):
+        declaration = effect.get("coordinateDeclaration")
+        if declaration is None:
+            continue
+        if not isinstance(declaration, dict):
+            raise ValueError("coordinateDeclaration 必须是对象")
+        for key in ("canvas", "anchor", "samplePosition"):
+            if key in declaration:
+                value = declaration[key]
+                if not isinstance(value, list) or len(value) != 2 or any(not isinstance(v, (float, int)) or isinstance(v, bool) or not math.isfinite(v) for v in value):
+                    raise ValueError(f"coordinateDeclaration.{key}必须是两个有效数字")
+        if "canvas" in declaration and any(v <= 0 for v in declaration["canvas"]):
+            raise ValueError("作者画布尺寸必须是正数")
+        if "partsScale" in declaration:
+            value = declaration["partsScale"]
+            if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value) or value <= 0:
+                raise ValueError("coordinateDeclaration.partsScale必须是正数")
+        if "source" in declaration and not isinstance(declaration["source"], str):
+            raise ValueError("coordinateDeclaration.source必须是字符串")
+
+
+def anchor_state_report(project):
+    """Compare explicitly mapped author anchors without guessing selectors."""
+    states = (project.get("skillPreview") or {}).get("actionStates", {})
+    animations = {a.get("id"): a for a in project.get("animations", [])}
+    result = {"status": "deferred", "nativeVerified": False, "states": {},
+              "reason": "normal/cast/restore的真实动作映射及作者身体/足底锚点未完整声明"}
+    if not states.get("source"):
+        return result
+    signatures = []
+    from action_presets import normalize_action_contract
+    for state in ("normal", "cast", "restore"):
+        animation = animations.get(states.get(state))
+        if not animation:
+            return result
+        contract = normalize_action_contract(animation)
+        keys = ("sourceCanvas", "bodyAnchor", "feetAnchor")
+        item = {"animation": animation["id"], **{key: contract.get(key) for key in keys},
+                "partsScale": animation.get("frameScale"), "returnState": contract.get("returnState")}
+        result["states"][state] = item
+        if any(item[key] is None for key in keys) or item["partsScale"] is None:
+            return result
+        # This only compares declarations; varying per-frame transforms still
+        # need compiled coordinate replay and cannot be inferred from anchors.
+        transforms = {(clip.get("x", 0), clip.get("y", 0), clip.get("scale", 1), clip.get("rotation", 0)) for clip in animation.get("clips", [])}
+        if len(transforms) > 1:
+            result["reason"] = "动作帧的变换不一致；需要编译坐标逐帧回读"
+            return result
+        signatures.append(([item[key] for key in keys], item["partsScale"], transforms))
+    consistent = all(value == signatures[0] for value in signatures[1:])
+    result.update(status="declared-offline" if consistent else "declared-mismatch", declaredAnchorConsistency=consistent,
+                  source=states["source"], reason="作者锚点声明一致；实际切换/恢复仍待原生核验" if consistent else "作者动作锚点或帧变换声明不一致")
+    return result
+
+
+def coordinate_report(project, effect, command, env):
+    subject = command[3]
+    # Only the inspected player-action Member/Ball bindings are built in.
+    # ZoneCenter must carry a declared ID and provenance rather than a new enum.
+    name = {-17: "Member", -18: "Ball"}.get(subject, "unknown")
+    binding = (project.get("skillPreview") or {}).get("subjectBindings", {}).get(str(subject), {})
+    if name == "unknown" and binding.get("name") == "ZoneCenter" and binding.get("source"):
+        name = "ZoneCenter"
+    reference = env.get("__bindings__", {}).get(subject)
+    if reference:
+        name = reference["name"]
+    following = bool(command[10])
+    result = {"subject": subject, "subjectName": name, "coordinate": command[6], "follow": following,
+              "locked": not following, "fixedPreviewPosition": True, "nativeVerified": False,
+              "hitBinding": "creation-position" if reference and reference.get("kind") == "hit-area" else "not-simulated",
+              "partsScale": effect.get("frameScale", 1), "scaleStatus": "offline-preview-only",
+              "followFlags": {"position": command[10], "angle": command[11]}}
+    if reference:
+        result["reference"] = reference
+    if binding.get("source"):
+        result["bindingSource"] = binding["source"]
+    author = effect.get("coordinateDeclaration", {})
+    result["authorTransform"] = author_to_world(author, author.get("samplePosition"))
+    result["status"] = "fixed-reference" if name != "unknown" and command[6] == ["AB"] else "deferred"
+    return result
+
+
 def plan_program(project, program, index=0):
+    validate_preview(project)
     tracks, notes, deferred, hides, effect_hides, instances = [], set(), [], [], [], []
     effects = project.get("effects", [])
     by_path = {}
@@ -64,11 +184,13 @@ def plan_program(project, program, index=0):
             if all(isinstance(term, dict) for term in value):
                 if any(term.get("mul") is not None or term.get("vlv") or any(term.get(key) is not None for key in ("alv", "alv2", "alv3", "alv4", "alv5", "alv6")) for term in value):
                     notes.add("部分参数依赖能力等级或战斗变量，暂用固定演示值。")
+                    deferred.append(dict(reason="参数依赖能力等级或战斗变量；固定演示值不能确认原生结果", command="numeric"))
                     return default
                 if any(term.get("min") != term.get("max") for term in value):
                     notes.add("随技能等级变化的参数采用首档数值；可在轨道中调整。")
                 return sum(numeric(term["min"]) for term in value if term.get("min") is not None and term.get("max") is not None)
         notes.add("部分数值依赖战斗变量，暂用固定演示值。")
+        deferred.append(dict(reason="数值未解析；采用固定演示值", command="numeric"))
         return default
 
     def point(subject, coord, u, v, env):
@@ -134,6 +256,12 @@ def plan_program(project, program, index=0):
                      scale=max(.05, min(20, ratio)),
                      layer=command[4][0])
         value["source"]["order"] = visits
+        value["source"]["coordinate"] = coordinate_report(project, effect, command, env)
+        if value["source"]["coordinate"]["status"] == "deferred":
+            deferred.append(dict(reason="对象或坐标绑定未确认；当前画面仅固定位置参考", pointer=pointer, command="ShowEffect"))
+        if command[10] or command[11]:
+            notes.add("跟随/锁定参数已保留，但当前固定预览没有模拟角色、敌人或场地移动。")
+        notes.add("parts.s与轨道缩放仅用于离线显示；不能据此确认原生世界坐标、锚点或命中。")
         value["instanceId"] = value["id"]
         instance = dict(id=value["id"], start=tick, end=value["end"], label=command[1], order=visits)
         instances.append(instance)
@@ -174,6 +302,7 @@ def plan_program(project, program, index=0):
         visits += 1
         if visits > 20000 or depth > 60 or tick >= LIMIT or len(tracks) >= MAX_TRACKS:
             notes.add("超长或密集演出已限制展开范围；剩余阶段可单独试看。")
+            deferred.append(dict(reason="演出展开达到有界预览上限", pointer=pointer, status="bounded"))
             return
         if not isinstance(node, list) or not node:
             return
@@ -213,13 +342,21 @@ def plan_program(project, program, index=0):
         elif tag == "ShowEffect":
             add_effect(node, tick, pointer, env)
         elif tag == "HideCharacter" and len(node) >= 3:
-            if node[1] in (-17, -18):
+            if node[1] == -17:
                 hides.append((tick, min(LIMIT, tick + max(1, int(numeric(node[2], 1))))))
+            elif node[1] == -18:
+                notes.add("HideCharacter(-18)绑定Ball，已知原生无效；预览保留角色可见，业务DSL未改。")
+                deferred.append(dict(reason="已知原生无效：Ball不支持HideCharacter", pointer=pointer,
+                                     command=tag, subject=-18, status="known-invalid"))
+            else:
+                deferred.append(dict(reason="HideCharacter对象未确认", pointer=pointer, command=tag, subject=node[1]))
         elif tag == "HideEffect":
             effect_hides.append((tick, visits, node[1]))
         elif tag == "CreateHitArea" and len(node) > 23:
             context = dict(env)
             context[node[19]] = point(node[2], node[3], node[4], node[5], env)
+            context["__bindings__"] = {**env.get("__bindings__", {}), node[19]:
+                                       {"name": "HitAreaCreation", "kind": "hit-area", "parentSubject": node[2], "nativeVerified": False}}
             if node[12] != ["Single"]:
                 notes.add("多目标或阵列判定使用一个固定演示位置。")
             sub(node[20], suffix="/20", context=context)
@@ -228,6 +365,13 @@ def plan_program(project, program, index=0):
         elif tag == "CreateReferencePoint" and len(node) > 11:
             context = dict(env)
             context[node[9]] = point(node[1], node[2], node[3], node[4], env)
+            parent = {-17: "Member", -18: "Ball"}.get(node[1], "unknown")
+            binding = (project.get("skillPreview") or {}).get("subjectBindings", {}).get(str(node[1]), {})
+            if parent == "unknown" and binding.get("name") == "ZoneCenter" and binding.get("source"):
+                parent = "ZoneCenter"
+            context["__bindings__"] = {**env.get("__bindings__", {}), node[9]:
+                                       {"name": "ReferencePoint", "kind": "reference-point", "parentSubject": node[1],
+                                        "parentName": parent, "nativeVerified": False}}
             if node[8] != ["Single"]:
                 notes.add("阵列参考点暂以一个固定位置演示。")
             sub(node[11], suffix="/11", context=context)
@@ -271,10 +415,14 @@ def plan_program(project, program, index=0):
             cursor = max(cursor, end)
     rank = {"BacksideOfCharacter": 0, "SameAsCharacter": 1, "ForesideOfCharacter": 2, "SuperForesideOfCharacter": 3, "NonPixelArt": 4}
     tracks = sorted(tracks + actor_tracks, key=lambda t: rank.get(t.get("layer"), 1))
-    return {"id": f"program_{index}", "name": f"技能版本 {index + 1}", "program": program.get("logical", ""),
+    trust = {"status": "partial-offline", "nativeVerified": False, "coordinatesVerified": False,
+             "hitSimulation": "deferred", "anchorRestore": "deferred", "anchorStates": anchor_state_report(project),
+             "deferredCount": len(deferred), "businessDslChanged": False}
+    return {"id": f"program_{index}", "name": f"技能版本 {index + 1}", "program": program.get("logical", ""), "trust": trust,
             "visualEvents": sum(t["type"] == "effect" for t in tracks), "notes": sorted(notes), "deferred": deferred[:100],
             "scene": {"duration": duration, "tracks": tracks, "source": {"kind": "official-script", "program": program.get("logical", ""),
-                        "label": "按官方脚本时序演示", "notes": sorted(notes), "deferredCount": len(deferred)}}}
+                        "label": "按官方脚本时序演示", "notes": sorted(notes), "deferredCount": len(deferred),
+                        "trust": trust, "deferred": deferred[:100]}}}
 
 
 def preview_plans(store, pid):
